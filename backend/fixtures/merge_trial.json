@@ -1,0 +1,74 @@
+[
+  {
+    "event": "trial_started",
+    "data": {
+      "pr_title": "Normalize JWT audience claims to lowercase strings",
+      "files_changed": [
+        "auth/claims.py"
+      ],
+      "pr_url": "https://github.com/demo/auth-tokens/pull/7"
+    },
+    "delay": 0.6
+  },
+  {
+    "event": "charge_filed",
+    "data": {
+      "id": "C1",
+      "title": "Uppercase audience claim 'ADMIN-API' is lowercased to 'admin-api'",
+      "severity": "medium",
+      "explanation": "normalize_audience converts 'ADMIN-API' to 'admin-api', breaking case-sensitive comparisons.",
+      "target_symbol": "auth.claims.normalize_audience",
+      "intended_behavior": "Audience strings should preserve original casing.",
+      "test_code": "from auth.claims import normalize_audience\n\ndef test_case_preserved():\n    assert normalize_audience('ADMIN-API') == 'ADMIN-API'\n"
+    },
+    "delay": 0.8
+  },
+  {
+    "event": "test_result",
+    "data": {
+      "charge_id": "C1",
+      "status": "fail_valid",
+      "new_code": false,
+      "output": "F                                                                        [100%]\nFAILED test_c1.py::test_case_preserved - AssertionError: assert 'admin-api' == 'ADMIN-API'\n1 failed in 0.03s",
+      "phase": "initial"
+    },
+    "delay": 0.8
+  },
+  {
+    "event": "defense",
+    "data": {
+      "charge_id": "C1",
+      "stance": "rebut",
+      "reasoning": "Lowercasing all audience claims is the entire stated purpose of this PR as documented in the title and docstring.",
+      "quoted_intent": "Normalize JWT audience claims to lowercase strings for case-insensitive tenant matching.",
+      "fixed_code": null,
+      "fixed_file_path": null
+    },
+    "delay": 0.8
+  },
+  {
+    "event": "verdict",
+    "data": {
+      "rebuttal_rulings": [
+        {
+          "charge_id": "C1",
+          "upheld": true,
+          "reason": "The Prosecutor's test directly contradicts the explicit purpose of the PR ('Normalize JWT audience claims to lowercase strings'). Rebuttal upheld."
+        }
+      ],
+      "ruling": "The sole charge against normalize_audience tested for case preservation when the explicit documented purpose of the PR is to lowercase audience claims. The Defender's rebuttal is upheld and Charge C1 is dismissed. With no standing charges remaining, the PR is cleared to merge.",
+      "summary": "All valid charges dismissed by upheld rebuttals; PR approved for merge.",
+      "verdict": "merge",
+      "confidence": 0.8,
+      "stats": {
+        "duration_s": 3.8,
+        "charges_filed": 1,
+        "charges_valid": 1,
+        "charges_dropped": 0,
+        "fixes_applied": 0,
+        "existing_tests_passed": true
+      }
+    },
+    "delay": 0.9
+  }
+]
