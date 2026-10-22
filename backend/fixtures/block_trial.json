@@ -1,0 +1,106 @@
+[
+  {
+    "event": "trial_started",
+    "data": {
+      "pr_title": "Refactor retry backoff and webhook signature verification",
+      "files_changed": [
+        "payments/webhook.py"
+      ],
+      "pr_url": "https://github.com/demo/payment-gateway/pull/19"
+    },
+    "delay": 0.6
+  },
+  {
+    "event": "charge_filed",
+    "data": {
+      "id": "C1",
+      "title": "Empty signature header bypasses HMAC check when secret is rotating",
+      "severity": "high",
+      "explanation": "verify_signature returns True when x_signature is an empty string during key rotation window due to truthiness check on fallback secret.",
+      "target_symbol": "payments.webhook.verify_signature",
+      "intended_behavior": "Empty or malformed signatures must always be rejected with False.",
+      "test_code": "from payments.webhook import verify_signature\n\ndef test_empty_signature_rejected():\n    assert verify_signature(b'{\"amount\": 100}', '', primary_secret='sec1', secondary_secret='sec2') is False\n"
+    },
+    "delay": 0.8
+  },
+  {
+    "event": "charge_filed",
+    "data": {
+      "id": "C2",
+      "title": "Legacy v1 timestamp parser fails on leap-second ISO strings",
+      "severity": "low",
+      "explanation": "parse_legacy_timestamp raises ValueError on :60 leap second timestamps.",
+      "target_symbol": "payments.webhook.parse_legacy_timestamp",
+      "intended_behavior": "Should parse ISO timestamps.",
+      "test_code": "from payments.webhook import parse_legacy_timestamp\n\ndef test_leap_second():\n    assert parse_legacy_timestamp('2016-12-31T23:59:60Z') > 0\n"
+    },
+    "delay": 0.7
+  },
+  {
+    "event": "test_result",
+    "data": {
+      "charge_id": "C1",
+      "status": "fail_valid",
+      "new_code": false,
+      "output": "F                                                                        [100%]\nFAILED test_c1.py::test_empty_signature_rejected - AssertionError: assert True is False\n1 failed in 0.04s",
+      "phase": "initial"
+    },
+    "delay": 0.9
+  },
+  {
+    "event": "test_result",
+    "data": {
+      "charge_id": "C2",
+      "status": "fail_preexisting",
+      "new_code": false,
+      "output": "F                                                                        [100%]\nFAILED test_c2.py::test_leap_second - ValueError: second must be in 0..59\n1 failed in 0.04s",
+      "phase": "initial"
+    },
+    "delay": 0.8
+  },
+  {
+    "event": "charge_dropped",
+    "data": {
+      "charge_id": "C2",
+      "reason": "pre-existing"
+    },
+    "delay": 0.6
+  },
+  {
+    "event": "defense",
+    "data": {
+      "charge_id": "C1",
+      "stance": "rebut",
+      "reasoning": "Webhook endpoints sit behind an API gateway that strips requests without headers, so empty signature strings should not happen in production.",
+      "quoted_intent": "Support dual-secret rotation for zero-downtime webhook key rollovers.",
+      "fixed_code": null,
+      "fixed_file_path": null
+    },
+    "delay": 0.9
+  },
+  {
+    "event": "verdict",
+    "data": {
+      "rebuttal_rulings": [
+        {
+          "charge_id": "C1",
+          "upheld": false,
+          "reason": "The quoted intent merely mentions dual-secret rotation and never authorizes accepting empty HMAC signatures; relying on upstream gateway filtering is not documented spec."
+        }
+      ],
+      "ruling": "Charge C2 was flagged as a pre-existing issue on BASE and dropped from this PR's liability. However, Charge C1 proves a high-severity authentication bypass on empty HMAC signatures introduced by this PR. The Defender's rebuttal is overruled and the PR is blocked.",
+      "summary": "High-severity HMAC bypass proven by sandbox execution; Defender rebuttal overruled; PR blocked.",
+      "verdict": "block",
+      "confidence": 0.8,
+      "stats": {
+        "duration_s": 5.1,
+        "charges_filed": 2,
+        "charges_valid": 1,
+        "charges_dropped": 1,
+        "fixes_applied": 0,
+        "existing_tests_passed": true
+      }
+    },
+    "delay": 1.0
+  }
+]

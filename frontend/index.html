@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PR Courtroom — Evidence-Based AI Code Review</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <div class="brand-emblem" aria-hidden="true">&#9878;</div>
+        <div>
+          <div class="brand-title-row">
+            <h1>PR Courtroom</h1>
+            <span class="badge-hackathon">Gemini 3.11 Sandbox</span>
+          </div>
+          <p class="brand-tagline">&ldquo;AI reviewers give opinions. PR Courtroom gives evidence.&rdquo;</p>
+        </div>
+      </div>
+      <div class="api-status-box">
+        <span id="apiKeyIndicator" class="status-pill status-neutral">Checking environment&hellip;</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- Docket Controls -->
+    <section class="docket-panel" aria-label="Trial Docket Controls">
+      <form id="trialForm" class="docket-form">
+        <div class="input-group">
+          <label for="prUrlInput" class="input-label">GitHub Pull Request URL</label>
+          <div class="url-input-row">
+            <input
+              id="prUrlInput"
+              type="text"
+              value="https://github.com/demo/shop-cart/pull/42"
+              placeholder="https://github.com/owner/repo/pull/123"
+              required
+              autocomplete="off"
+            />
+            <label class="replay-toggle" title="Stream saved trial fixture with zero API keys required">
+              <input id="replayCheckbox" type="checkbox" checked />
+              <span class="toggle-track"></span>
+              <span class="toggle-text">Replay Mode</span>
+            </label>
+            <button id="startTrialBtn" type="submit" class="btn-primary">
+              Convene Trial
+            </button>
+          </div>
+        </div>
+
+        <div class="preset-row">
+          <span class="preset-label">Preset Dockets:</span>
+          <button
+            type="button"
+            class="preset-chip active"
+            data-url="https://github.com/demo/shop-cart/pull/42"
+          >
+            PR #42 &middot; shop-cart (Merge w/ Fixes &middot; 90%)
+          </button>
+          <button
+            type="button"
+            class="preset-chip"
+            data-url="https://github.com/demo/payment-gateway/pull/19"
+          >
+            PR #19 &middot; payment-gateway (Block &middot; 80%)
+          </button>
+          <button
+            type="button"
+            class="preset-chip"
+            data-url="https://github.com/demo/auth-tokens/pull/7"
+          >
+            PR #7 &middot; auth-tokens (Rebuttal Merge &middot; 80%)
+          </button>
+        </div>
+      </form>
+    </section>
+
+    <!-- Phase Stepper -->
+    <section class="stepper-bar" aria-label="Trial Phases">
+      <div class="step-item" id="step-fetch">
+        <span class="step-num">1</span>
+        <span class="step-label">Fetch PR &amp; Workdir</span>
+      </div>
+      <div class="step-divider"></div>
+      <div class="step-item" id="step-prosecutor">
+        <span class="step-num">2</span>
+        <span class="step-label">Prosecutor Charges</span>
+      </div>
+      <div class="step-divider"></div>
+      <div class="step-item" id="step-sandbox">
+        <span class="step-num">3</span>
+        <span class="step-label">Pytest Evidence</span>
+      </div>
+      <div class="step-divider"></div>
+      <div class="step-item" id="step-defender">
+        <span class="step-num">4</span>
+        <span class="step-label">Defense &amp; Patch</span>
+      </div>
+      <div class="step-divider"></div>
+      <div class="step-item" id="step-verdict">
+        <span class="step-num">5</span>
+        <span class="step-label">Judge &amp; Verdict</span>
+      </div>
+    </section>
+
+    <!-- Error Banner -->
+    <div id="errorBanner" class="error-banner hidden" role="alert">
+      <strong>Courtroom Error:</strong>
+      <span id="errorText"></span>
+    </div>
+
+    <!-- Active PR Header Card -->
+    <section id="prHeaderCard" class="pr-header-card hidden">
+      <div class="pr-header-main">
+        <div class="pr-eyebrow">CASE ON DOCKET</div>
+        <h2 id="prTitleDisplay" class="pr-title">&mdash;</h2>
+        <a id="prUrlDisplay" href="#" target="_blank" rel="noopener noreferrer" class="pr-link">&mdash;</a>
+      </div>
+      <div class="pr-files-box">
+        <div class="pr-eyebrow">FILES CHANGED</div>
+        <div id="filesChangedList" class="files-list"></div>
+      </div>
+    </section>
+
+    <!-- Courtroom Bench Summary Cards -->
+    <section class="bench-grid">
+      <div class="bench-card bench-prosecutor" id="benchProsecutor">
+        <div class="bench-role">THE PROSECUTOR</div>
+        <div class="bench-model">Gemini Flash &middot; Adversarial Test Writer</div>
+        <p class="bench-status" id="prosecutorStatus">Awaiting docket&hellip;</p>
+      </div>
+      <div class="bench-card bench-defender" id="benchDefender">
+        <div class="bench-role">THE DEFENDER</div>
+        <div class="bench-model">Gemini Flash &middot; Patch &amp; Intent Counsel</div>
+        <p class="bench-status" id="defenderStatus">Standing by for valid evidence&hellip;</p>
+      </div>
+      <div class="bench-card bench-judge" id="benchJudge">
+        <div class="bench-role">THE JUDGE</div>
+        <div class="bench-model">Gemini Judge + Deterministic Scoring</div>
+        <p class="bench-status" id="judgeStatus">Court in recess&hellip;</p>
+      </div>
+    </section>
+
+    <!-- Verdict Banner (Rendered when verdict event arrives) -->
+    <section id="verdictSection" class="verdict-panel hidden" aria-live="polite">
+      <div class="verdict-top">
+        <div class="verdict-badge-wrap">
+          <div class="verdict-label">FINAL COURT VERDICT</div>
+          <div id="verdictStamp" class="verdict-stamp">&mdash;</div>
+        </div>
+        <div class="confidence-wrap">
+          <div class="verdict-label">BACKEND DETERMINISTIC CONFIDENCE</div>
+          <div class="confidence-row">
+            <div class="confidence-bar-bg">
+              <div id="confidenceBarFill" class="confidence-bar-fill"></div>
+            </div>
+            <span id="confidenceValue" class="confidence-number">0%</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="ruling-body">
+        <h3>Judicial Ruling</h3>
+        <p id="judgeRulingText" class="ruling-quote"></p>
+        <p id="judgeSummaryText" class="ruling-summary"></p>
+      </div>
+
+      <div class="stats-grid" id="statsGrid">
+        <div class="stat-cell">
+          <span class="stat-label">Duration</span>
+          <span class="stat-val" id="statDuration">&mdash;</span>
+        </div>
+        <div class="stat-cell">
+          <span class="stat-label">Charges Filed</span>
+          <span class="stat-val" id="statFiled">0</span>
+        </div>
+        <div class="stat-cell">
+          <span class="stat-label">Proven Valid</span>
+          <span class="stat-val" id="statValid">0</span>
+        </div>
+        <div class="stat-cell">
+          <span class="stat-label">Dropped</span>
+          <span class="stat-val" id="statDropped">0</span>
+        </div>
+        <div class="stat-cell">
+          <span class="stat-label">Fixes Applied</span>
+          <span class="stat-val" id="statFixes">0</span>
+        </div>
+        <div class="stat-cell">
+          <span class="stat-label">Existing Tests</span>
+          <span class="stat-val" id="statExisting">&mdash;</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Main Split: Charges Docket + Live SSE Transcript -->
+    <div class="courtroom-split">
+      <section class="charges-column">
+        <div class="section-heading">
+          <h2>Charges &amp; Executed Evidence</h2>
+          <span id="chargesCounter" class="counter-pill">0 charges</span>
+        </div>
+        <div id="chargesContainer" class="charges-list">
+          <div class="empty-state" id="emptyChargesState">
+            <p>Click <strong>Convene Trial</strong> to stream the live courtroom session.</p>
+          </div>
+        </div>
+      </section>
+
+      <aside class="transcript-column">
+        <div class="section-heading">
+          <h2>Live SSE Courtroom Feed</h2>
+          <span id="eventCountPill" class="counter-pill">0 events</span>
+        </div>
+        <div id="sseTranscript" class="sse-transcript"></div>
+      </aside>
+    </div>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

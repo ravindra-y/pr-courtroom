@@ -1,0 +1,162 @@
+[
+  {
+    "event": "trial_started",
+    "data": {
+      "pr_title": "Add tiered promo code discounts and refactor subtotal calculation",
+      "files_changed": [
+        "shop/cart.py"
+      ],
+      "pr_url": "https://github.com/demo/shop-cart/pull/42"
+    },
+    "delay": 0.6
+  },
+  {
+    "event": "charge_filed",
+    "data": {
+      "id": "C1",
+      "title": "FLAT50 promo code produces negative total on carts under $50",
+      "severity": "high",
+      "explanation": "apply_discount subtracts 50.0 for 'FLAT50' without clamping the result at 0.0, returning -20.0 for a $30.00 subtotal despite the docstring specifying minimum 0.0.",
+      "target_symbol": "shop.cart.apply_discount",
+      "intended_behavior": "Total after discount cannot be negative (minimum 0.0).",
+      "test_code": "from shop.cart import apply_discount\n\ndef test_flat50_clamps_to_zero():\n    assert apply_discount(30.0, \"FLAT50\") == 0.0\n"
+    },
+    "delay": 0.8
+  },
+  {
+    "event": "charge_filed",
+    "data": {
+      "id": "C2",
+      "title": "VIP discount with SAVE20 applies compound (76.0) rather than additive (75.0)",
+      "severity": "medium",
+      "explanation": "Applying SAVE20 (20% off) with is_vip=True (5% off) multiplies 100 * 0.80 * 0.95 = 76.0 instead of subtracting 25% to get 75.0.",
+      "target_symbol": "shop.cart.apply_discount",
+      "intended_behavior": "20% promo discount plus 5% VIP discount should equal 25% total discount.",
+      "test_code": "from shop.cart import apply_discount\n\ndef test_vip_and_save20_additive():\n    assert apply_discount(100.0, \"SAVE20\", is_vip=True) == 75.0\n"
+    },
+    "delay": 0.8
+  },
+  {
+    "event": "charge_filed",
+    "data": {
+      "id": "C3",
+      "title": "Negative subtotal input fails to raise ValueError",
+      "severity": "low",
+      "explanation": "Passing a negative subtotal to apply_discount might compute a negative discounted figure instead of raising ValueError.",
+      "target_symbol": "shop.cart.apply_discount",
+      "intended_behavior": "Subtotal cannot be negative; must raise ValueError.",
+      "test_code": "import pytest\nfrom shop.cart import apply_discount\n\ndef test_negative_subtotal_raises():\n    with pytest.raises(ValueError):\n        apply_discount(-10.0, \"SAVE10\")\n"
+    },
+    "delay": 0.7
+  },
+  {
+    "event": "test_result",
+    "data": {
+      "charge_id": "C1",
+      "status": "fail_valid",
+      "new_code": true,
+      "output": "F                                                                        [100%]\n=================================== FAILURES ===================================\n__________________________ test_flat50_clamps_to_zero __________________________\ntest_c1.py:4: in test_flat50_clamps_to_zero\n    assert apply_discount(30.0, \"FLAT50\") == 0.0\nE   AssertionError: assert -20.0 == 0.0\nE    +  where -20.0 = apply_discount(30.0, 'FLAT50')\n=========================== short test summary info ============================\nFAILED test_c1.py::test_flat50_clamps_to_zero - AssertionError: assert -20.0 == 0.0\n1 failed in 0.04s",
+      "phase": "initial"
+    },
+    "delay": 0.9
+  },
+  {
+    "event": "test_result",
+    "data": {
+      "charge_id": "C2",
+      "status": "fail_valid",
+      "new_code": true,
+      "output": "F                                                                        [100%]\n=================================== FAILURES ===================================\n_________________________ test_vip_and_save20_additive _________________________\ntest_c2.py:4: in test_vip_and_save20_additive\n    assert apply_discount(100.0, \"SAVE20\", is_vip=True) == 75.0\nE   AssertionError: assert 76.0 == 75.0\nE    +  where 76.0 = apply_discount(100.0, 'SAVE20', is_vip=True)\n=========================== short test summary info ============================\nFAILED test_c2.py::test_vip_and_save20_additive - AssertionError: assert 76.0 == 75.0\n1 failed in 0.04s",
+      "phase": "initial"
+    },
+    "delay": 0.8
+  },
+  {
+    "event": "test_result",
+    "data": {
+      "charge_id": "C3",
+      "status": "pass",
+      "new_code": false,
+      "output": ".                                                                        [100%]\n1 passed in 0.03s",
+      "phase": "initial"
+    },
+    "delay": 0.7
+  },
+  {
+    "event": "charge_dropped",
+    "data": {
+      "charge_id": "C3",
+      "reason": "overruled by evidence"
+    },
+    "delay": 0.6
+  },
+  {
+    "event": "defense",
+    "data": {
+      "charge_id": "C1",
+      "stance": "fix",
+      "reasoning": "The Prosecutor's test proves a real boundary defect: FLAT50 subtracts 50.0 without clamping at 0.0. Fixed apply_discount to clamp the final discounted total with max(0.0, discounted) and restored item quantity multiplication in calculate_subtotal.",
+      "quoted_intent": null,
+      "fixed_code": "\"\"\"Shopping cart subtotal and discount calculations (Fixed HEAD version).\"\"\"\n\n\ndef calculate_subtotal(items: list[dict]) -> float:\n    \"\"\"\n    Calculate the cart subtotal from a list of item dicts.\n    Each item dict has 'price' (float) and optional 'quantity' (int, default 1).\n    Raises ValueError if any item has a negative price or quantity.\n    \"\"\"\n    for item in items:\n        if item.get(\"price\", 0) < 0 or item.get(\"quantity\", 1) < 0:\n            raise ValueError(\"Item price and quantity must be non-negative\")\n    return round(\n        sum(float(item[\"price\"]) * int(item.get(\"quantity\", 1)) for item in items), 2\n    )\n\n\ndef apply_discount(subtotal: float, promo_code: str | None, is_vip: bool = False) -> float:\n    \"\"\"\n    Apply a promotional discount code and optional VIP bonus to a cart subtotal.\n\n    Supported promo codes:\n    - \"SAVE10\": 10% off\n    - \"SAVE20\": 20% off\n    - \"FLAT50\": $50 flat discount\n\n    Note: VIP members receive an additional 5% compound discount applied AFTER\n    any promo code discount. Total after discount cannot be negative (minimum 0.0).\n    \"\"\"\n    if subtotal < 0:\n        raise ValueError(\"Subtotal cannot be negative\")\n\n    discounted = float(subtotal)\n    code = (promo_code or \"\").strip().upper()\n\n    if code == \"SAVE10\":\n        discounted = discounted * 0.90\n    elif code == \"SAVE20\":\n        discounted = discounted * 0.80\n    elif code == \"FLAT50\":\n        discounted = max(0.0, discounted - 50.0)\n    elif code != \"\":\n        raise ValueError(f\"Unknown promo code: {promo_code}\")\n\n    if is_vip:\n        discounted = discounted * 0.95\n\n    return round(max(0.0, discounted), 2)\n\n\ndef format_receipt(subtotal: float, final_total: float) -> str:\n    \"\"\"Format a single-line receipt summary.\"\"\"\n    saved = round(subtotal - final_total, 2)\n    return f\"Subtotal: ${subtotal:.2f} | Saved: ${saved:.2f} | Total: ${final_total:.2f}\"\n",
+      "fixed_file_path": "shop/cart.py"
+    },
+    "delay": 1.0
+  },
+  {
+    "event": "defense",
+    "data": {
+      "charge_id": "C2",
+      "stance": "rebut",
+      "reasoning": "Both the PR description and the apply_discount docstring explicitly specify that the 5% VIP discount is a compound discount applied AFTER the promo code discount (100 * 0.80 * 0.95 = 76.0), not an additive 25% discount.",
+      "quoted_intent": "Note: VIP members receive an additional 5% compound discount applied AFTER any promo code discount.",
+      "fixed_code": null,
+      "fixed_file_path": null
+    },
+    "delay": 0.9
+  },
+  {
+    "event": "test_result",
+    "data": {
+      "charge_id": "C1",
+      "status": "pass",
+      "new_code": true,
+      "output": ".                                                                        [100%]\n1 passed in 0.03s",
+      "phase": "after_fix"
+    },
+    "delay": 0.8
+  },
+  {
+    "event": "fix_applied",
+    "data": {
+      "charge_id": "C1",
+      "diff": "--- a/shop/cart.py\n+++ b/shop/cart.py\n@@ -11,3 +11,4 @@\n-    return round(sum(float(item[\"price\"]) for item in items), 2)\n+    return round(\n+        sum(float(item[\"price\"]) * int(item.get(\"quantity\", 1)) for item in items), 2\n+    )\n@@ -36,2 +37,2 @@\n     elif code == \"FLAT50\":\n-        discounted = discounted - 50.0\n+        discounted = max(0.0, discounted - 50.0)\n@@ -43,1 +44,1 @@\n-    return round(discounted, 2)\n+    return round(max(0.0, discounted), 2)\n",
+      "existing_tests_passed": true
+    },
+    "delay": 0.8
+  },
+  {
+    "event": "verdict",
+    "data": {
+      "rebuttal_rulings": [
+        {
+          "charge_id": "C2",
+          "upheld": true,
+          "reason": "The Defender quoted verbatim from both the docstring and PR description confirming that the 5% VIP discount is intentionally compound after the promo discount (yielding 76.0)."
+        }
+      ],
+      "ruling": "Charge C3 failed to reproduce in the sandbox and was overruled by evidence. Charge C2 is dismissed because the compound VIP discount behavior is explicitly documented in the specification. Charge C1 exposed a critical negative-total bug on FLAT50 which the Defender patched and verified against all tests.",
+      "summary": "1 standing bug fixed and verified in sandbox; 1 spec rebuttal upheld by the Court; 1 unsupported charge overruled by evidence.",
+      "verdict": "merge_with_fixes",
+      "confidence": 0.9,
+      "stats": {
+        "duration_s": 6.4,
+        "charges_filed": 3,
+        "charges_valid": 2,
+        "charges_dropped": 1,
+        "fixes_applied": 1,
+        "existing_tests_passed": true
+      }
+    },
+    "delay": 1.0
+  }
+]
