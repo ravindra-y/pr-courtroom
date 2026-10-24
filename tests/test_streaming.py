@@ -1,10 +1,11 @@
 import asyncio
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
 
-from backend.github_client import WORKDIR_ROOT
+from backend.agents.gemini_client import generate_structured, redact_secrets
+from backend.github_client import GitHubClientError, WORKDIR_ROOT
 from backend.main import app
 from backend.models import (
     Charge,
@@ -17,6 +18,7 @@ from backend.models import (
 )
 from backend.orchestrator import run_trial
 from backend.replay import FIXTURES_DIR, list_fixtures, replay_trial
+from backend.sandbox import run_test
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -35,7 +37,6 @@ def test_replay_demo_fixture() -> None:
         assert names.count("fix_applied") == 2
         assert names[-1] == "verdict"
 
-        # Validate every model payload against backend/models.py schemas
         for name, data in events:
             if name == "charge_filed":
                 Charge.model_validate(data)
@@ -201,15 +202,200 @@ def test_run_trial_event_sequence_and_fixture_saving() -> None:
             ]
             assert events[-1][1]["verdict"] == "merge_with_fixes"
             assert events[-1][1]["confidence"] == 0.9
-            # Verify workdir/<run_id> was cleaned up
             assert not (WORKDIR_ROOT / run_id).exists()
-            # Verify fixture was saved with clamped delays 0.5..2.0
             assert saved_fixture.is_file()
         finally:
             if saved_fixture.exists():
                 saved_fixture.unlink()
 
     asyncio.run(_run())
+
+
+def test_edge_cases_pr_not_found_and_github_rate_limit() -> None:
+    async def _run() -> None:
+        with patch(
+            "backend.orchestrator.prepare_workspace",
+            new=AsyncMock(
+                side_effect=GitHubClientError(
+                    "PR owner/repo#999 not found (404). The pull request or repository may not exist or may be private."
+                )
+            ),
+        ):
+            events_404 = [
+                ev async for ev in run_trial("https://github.com/owner/repo/pull/999", run_id="t404")
+            ]
+        assert events_404 == [
+            (
+                "error",
+                {
+                    "message": "PR owner/repo#999 not found (404). The pull request or repository may not exist or may be private."
+                },
+            )
+        ]
+
+        with patch(
+            "backend.orchestrator.prepare_workspace",
+            new=AsyncMock(
+                side_effect=GitHubClientError(
+                    "GitHub API rate limit exceeded or access forbidden (403) while fetching PR owner/repo#1."
+                )
+            ),
+        ):
+            events_rl = [
+                ev async for ev in run_trial("https://github.com/owner/repo/pull/1", run_id="trl")
+            ]
+        assert events_rl[0][0] == "error"
+        assert "rate limit exceeded" in events_rl[0][1]["message"]
+
+    asyncio.run(_run())
+
+
+def test_edge_case_gemini_rate_limit_retries_once_after_short_wait(monkeypatch) -> None:
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_RATE_LIMIT_WAIT_SECONDS", "0.01")
+
+    call_count = 0
+
+    async def flaky_429(*, model, contents, config):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("429 RESOURCE_EXHAUSTED: Quota exceeded")
+        resp = MagicMock()
+        resp.text = '{"charges": []}'
+        return resp
+
+    fake_client = MagicMock()
+    fake_client.aio.models.generate_content = AsyncMock(side_effect=flaky_429)
+
+    with patch("backend.agents.gemini_client.get_gemini_client", return_value=fake_client):
+        result = asyncio.run(
+            generate_structured(
+                model="gemini-2.5-flash",
+                system_instruction="Sys",
+                user_content="User",
+                schema=ProsecutorOutput,
+            )
+        )
+    assert isinstance(result, ProsecutorOutput)
+    assert call_count == 2
+
+
+def test_edge_case_all_charges_broken_emits_merge_050() -> None:
+    async def _run() -> None:
+        broken_prosecutor_out = ProsecutorOutput(
+            charges=[
+                Charge(
+                    id="C1",
+                    title="Broken syntax test",
+                    severity="medium",
+                    explanation="Broken",
+                    target_symbol="shop.cart.cart_total",
+                    intended_behavior="Intent",
+                    test_code="def test_broken(:\n    pass\n",
+                ),
+                Charge(
+                    id="C2",
+                    title="Missing import test",
+                    severity="low",
+                    explanation="Broken import",
+                    target_symbol="shop.cart.apply_discount",
+                    intended_behavior="Intent",
+                    test_code="import nonexistent_module_xyz\ndef test_m(): assert True\n",
+                ),
+            ]
+        )
+        run_id = "test_all_broken"
+        saved_fixture = FIXTURES_DIR / f"{run_id}.json"
+        try:
+            with patch(
+                "backend.orchestrator.prosecute",
+                new=AsyncMock(return_value=broken_prosecutor_out),
+            ):
+                events = [
+                    ev
+                    async for ev in run_trial(
+                        "https://github.com/demo/shop/pull/1", run_id=run_id
+                    )
+                ]
+            names = [n for n, _ in events]
+            assert names.count("charge_dropped") == 2
+            assert names[-1] == "verdict"
+            verdict_ev = events[-1][1]
+            assert verdict_ev["verdict"] == "merge"
+            assert verdict_ev["confidence"] == 0.50
+            assert "No charges were proven" in verdict_ev["ruling"]
+        finally:
+            if saved_fixture.exists():
+                saved_fixture.unlink()
+
+    asyncio.run(_run())
+
+
+def test_edge_case_pr_with_no_python_files() -> None:
+    async def _run() -> None:
+        fake_ws = {
+            "title": "Update README only",
+            "body": "Docs change",
+            "base_sha": "a",
+            "head_sha": "b",
+            "changed_files": ["README.md", "docs/guide.txt"],
+            "diff": "",
+            "base_dir": "/tmp/base",
+            "head_dir": "/tmp/head",
+        }
+        with patch(
+            "backend.orchestrator.prepare_workspace",
+            new=AsyncMock(return_value=fake_ws),
+        ):
+            events = [
+                ev
+                async for ev in run_trial(
+                    "https://github.com/owner/repo/pull/2", run_id="test_no_py"
+                )
+            ]
+        assert len(events) == 1
+        assert events[0][0] == "error"
+        assert "does not modify any Python (.py) files" in events[0][1]["message"]
+
+    asyncio.run(_run())
+
+
+def test_sandbox_env_contains_only_path_and_pythonpath_and_no_secrets(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("GEMINI_API_KEY", "AIzaSecretKey123456789")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_SecretToken123456789")
+
+    test_file = tmp_path / "test_env_check.py"
+    test_file.write_text(
+        "import os\n"
+        "def test_env_isolated():\n"
+        "    assert 'GEMINI_API_KEY' not in os.environ\n"
+        "    assert 'GITHUB_TOKEN' not in os.environ\n",
+        encoding="utf-8",
+    )
+
+    captured_env: dict[str, str] = {}
+    import subprocess as sp
+
+    real_run = sp.run
+
+    def spy_run(*args, **kwargs):
+        captured_env.update(kwargs.get("env") or {})
+        return real_run(*args, **kwargs)
+
+    with patch("backend.sandbox.subprocess.run", side_effect=spy_run):
+        res = run_test(tmp_path, test_file)
+
+    assert res["returncode"] == 0
+    assert set(captured_env.keys()) == {"PATH", "PYTHONPATH"}
+
+    leaked = "Error with AIzaSecretKey123456789 and ghp_SecretToken123456789"
+    cleaned = redact_secrets(leaked)
+    assert "AIzaSecretKey123456789" not in cleaned
+    assert "ghp_SecretToken123456789" not in cleaned
+    assert "[REDACTED]" in cleaned
 
 
 def test_fastapi_sse_endpoints() -> None:
@@ -224,7 +410,6 @@ def test_fastapi_sse_endpoints() -> None:
     assert "event: error" in res_err.text
     assert "Invalid GitHub Pull Request URL" in res_err.text
 
-    # Verify static frontend files are served at /
     res_index = client.get("/")
     assert res_index.status_code == 200
     assert "PR Courtroom" in res_index.text
@@ -239,4 +424,3 @@ def test_fastapi_sse_endpoints() -> None:
     assert res_js.status_code == 200
     assert "new EventSource" in res_js.text
     assert "escapeHtml" in res_js.text
-

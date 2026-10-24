@@ -7,11 +7,11 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Iterable, Optional
 
 from backend.agents.defender import defend
-from backend.agents.gemini_client import GeminiClientError
+from backend.agents.gemini_client import GeminiClientError, redact_secrets
 from backend.agents.judge import build_computed_context, judge
 from backend.agents.prosecutor import prosecute
 from backend.github_client import GitHubClientError, WORKDIR_ROOT, parse_pr_url, prepare_workspace
-from backend.models import Charge, DefenseResponse, TestResult
+from backend.models import Charge, DefenseResponse, JudgeOutput, TestResult
 from backend.replay import clamp_delay, save_fixture
 from backend.sandbox import (
     apply_fix_async,
@@ -196,9 +196,7 @@ def _sanitize_error_message(exc: Exception) -> str:
         msg = str(exc)
     else:
         msg = f"Trial execution encountered an unexpected error ({type(exc).__name__})."
-    # Redact anything that looks like a token or key just in case
-    msg = re.sub(r"(ghp_[A-Za-z0-9_]+|ghs_[A-Za-z0-9_]+|AIza[A-Za-z0-9_-]+)", "[REDACTED]", msg)
-    return msg
+    return redact_secrets(msg)
 
 
 async def run_trial(
@@ -235,6 +233,14 @@ async def run_trial(
         parse_pr_url(pr_url)
         workspace = await prepare_workspace(pr_url, effective_run_id)
 
+        py_files = [
+            f for f in workspace.get("changed_files", []) if str(f).endswith(".py")
+        ]
+        if not py_files:
+            raise ValueError(
+                "This pull request does not modify any Python (.py) files. PR Courtroom only trials Python code changes."
+            )
+
         yield record(
             "trial_started",
             {
@@ -246,7 +252,6 @@ async def run_trial(
 
         prosecutor_output = await prosecute(workspace, workspace["head_dir"])
         charges = prosecutor_output.charges[:3]
-        charges_by_id = {c.id: c for c in charges}
 
         for charge in charges:
             yield record("charge_filed", charge.model_dump())
@@ -287,6 +292,45 @@ async def run_trial(
             for c in charges
             if c.id in initial_by_id and initial_by_id[c.id].status == "fail_valid"
         ]
+
+        # Edge case: all charges broken / dropped (no valid evidence survived)
+        if not valid_charges:
+            verdict, confidence = compute_verdict(
+                standing=[],
+                fix_results=[],
+                after_fix_results=[],
+                any_valid_evidence=False,
+                dismissed_by_rebuttal=False,
+                existing_tests_passed=True,
+            )
+            duration_s = round(time.perf_counter() - start_ts, 2)
+            stats = {
+                "duration_s": duration_s,
+                "charges_filed": len(charges),
+                "charges_valid": 0,
+                "charges_dropped": charges_dropped_count,
+                "fixes_applied": 0,
+                "existing_tests_passed": True,
+            }
+            judge_output = JudgeOutput(
+                rebuttal_rulings=[],
+                ruling=(
+                    "No charges were proven by executable pytest evidence in the sandbox "
+                    "(all filed charges were dropped as broken tests, overruled by passing "
+                    "evidence, or pre-existing). With no standing defects proven, the pull "
+                    "request is cleared to merge."
+                ),
+                summary="No valid sandbox evidence survived; merge (confidence 0.50).",
+            )
+            verdict_data = {
+                **judge_output.model_dump(),
+                "verdict": verdict,
+                "confidence": confidence,
+                "stats": stats,
+            }
+            yield record("verdict", verdict_data)
+            save_fixture(effective_run_id, recorded)
+            return
 
         responses: list[DefenseResponse] = []
         if valid_charges:
