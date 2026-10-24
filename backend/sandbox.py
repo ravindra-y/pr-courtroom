@@ -34,15 +34,29 @@ def _sanitize_output(text: str, *paths_to_strip: str | Path) -> str:
     for p in paths_to_strip:
         if not p:
             continue
-        for variant in (str(Path(p).resolve()), str(Path(p))):
-            if variant and variant not in candidates:
-                candidates.append(variant.rstrip("/"))
+        p_str = str(p)
+        variants = [p_str, p_str.replace("\\", "/")]
+        try:
+            resolved = Path(p).resolve()
+            variants.extend([str(resolved), resolved.as_posix()])
+        except OSError:
+            pass
+        for variant in variants:
+            norm = variant.rstrip("/\\")
+            if norm and norm not in candidates:
+                candidates.append(norm)
     # Sort longest first so nested paths are stripped cleanly
     candidates.sort(key=len, reverse=True)
     for prefix in candidates:
         cleaned = cleaned.replace(prefix + "/", "")
+        cleaned = cleaned.replace(prefix + "\\", "")
         cleaned = cleaned.replace(prefix, ".")
-    cleaned = re.sub(r"/(?:tmp|var|home|private)[^\s:]*?/(tests_generated/)", r"\1", cleaned)
+    cleaned = re.sub(
+        r"(?:[A-Za-z]:[\\/]|/)(?:tmp|var|home|private|Users|Windows|Temp)[^\s:]*?[\\/](tests_generated[\\/])",
+        r"\1",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
     if len(cleaned) > MAX_OUTPUT_CHARS:
         cleaned = cleaned[:MAX_OUTPUT_CHARS]
     return cleaned
@@ -55,7 +69,8 @@ def run_test(
 ) -> dict:
     """
     Run pytest in a subprocess against `version_dir` with an isolated environment
-    containing only PATH and PYTHONPATH.
+    containing only PATH and PYTHONPATH (plus SYSTEMROOT on Windows so Python's
+    RNG and WinSock DLLs can initialize).
     Returns dict {returncode, stdout, stderr, timed_out}.
     """
     ver_path = Path(version_dir).resolve()
@@ -63,9 +78,11 @@ def run_test(
     effective_timeout = _default_timeout(timeout)
 
     env = {
-        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "PATH": os.environ.get("PATH", ""),
         "PYTHONPATH": str(ver_path),
     }
+    if os.name == "nt" and "SYSTEMROOT" in os.environ:
+        env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
     cmd = [
         sys.executable,
         "-m",
@@ -277,7 +294,7 @@ def apply_fix(
     """
     head_path = Path(head_dir).resolve()
     target = (head_path / file_path).resolve()
-    if not str(target).startswith(str(head_path) + os.sep):
+    if not target.is_relative_to(head_path) or target == head_path:
         raise ValueError(f"Unsafe file_path outside head_dir: {file_path}")
 
     key = (str(head_path), file_path)

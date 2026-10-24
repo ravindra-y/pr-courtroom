@@ -2,7 +2,7 @@
 
 > **"AI reviewers give opinions. PR Courtroom gives evidence."**
 
-PR Courtroom is a local, evidence-based AI pull request trial system built with **Python 3.11, FastAPI, Google Gemini (`google-genai`), and an isolated Pytest Sandbox**. Instead of leaving subjective style comments, three specialized Gemini agents (**Prosecutor**, **Defender**, and **Judge**) put a pull request on trial:
+PR Courtroom is a local, evidence-based AI pull request trial system built with **Python 3.13, FastAPI, Google Gemini (`google-genai`), and an isolated Pytest Sandbox**. Instead of leaving subjective style comments, three specialized Gemini agents (**Prosecutor**, **Defender**, and **Judge**) put a pull request on trial:
 
 1. **The Prosecutor** inspects the PR diff and writes up to 3 executable `pytest` tests designed to fail on real bugs.
 2. **The Sandbox Bailiff** executes those tests in an isolated subprocess (`PATH` and `PYTHONPATH` only, 10s timeout) against `HEAD` and `BASE`. Claims that pass on `HEAD`, fail to collect/import, or fail on `BASE` (pre-existing) are automatically thrown out. Only bugs proven by failing tests survive.
@@ -13,22 +13,39 @@ PR Courtroom is a local, evidence-based AI pull request trial system built with 
 
 ---
 
-## Quick Setup
+## Quick Setup (Windows 10/11 PowerShell with Python 3.13)
 
-### 1. Create a Virtual Environment & Install Dependencies
+### 1. Create and Activate a Virtual Environment
 
-```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+Open **PowerShell** in the project root directory and run:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 ```
 
-### 2. Configure `.env`
+> **If PowerShell blocks script execution (`PSSecurityException`):**  
+> Run this safe, **session-only** workaround (it applies only to the current PowerShell window and does not alter your machine-wide execution policy), then activate again:
+> ```powershell
+> Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
+> .\.venv\Scripts\Activate.ps1
+> ```
+
+*(On Linux/macOS shells, activate with `source .venv/bin/activate`.)*
+
+### 2. Upgrade `pip` and Install Dependencies
+
+```powershell
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+### 3. Configure `.env`
 
 Copy `.env.example` to `.env` and fill in your keys (only required for **Live Mode**; **Replay Mode** works immediately with no API keys):
 
-```bash
-cp .env.example .env
+```powershell
+Copy-Item .env.example .env
 ```
 
 ```ini
@@ -39,13 +56,13 @@ GEMINI_MODEL_JUDGE=gemini-2.5-flash
 SANDBOX_TIMEOUT_SECONDS=10
 ```
 
-### 3. Run the Server
+### 4. Start the Application
 
-```bash
-uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+```powershell
+python -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Open **[http://localhost:8000](http://localhost:8000)** in your browser.
+Open **[http://127.0.0.1:8000](http://127.0.0.1:8000)** in your browser.
 
 ---
 
@@ -53,15 +70,15 @@ Open **[http://localhost:8000](http://localhost:8000)** in your browser.
 
 Replay Mode is **ON by default** in the top bar (and persisted in `localStorage`):
 
-1. Open `http://localhost:8000`.
+1. Open `http://127.0.0.1:8000`.
 2. Click **"Load demo PR"** (or click **"Load demo PR & Start Trial"** in the center card).
 3. Ensure **"Replay mode"** is toggled **ON** and click **"Start trial"**.
 4. The backend streams the recorded trial from `backend/fixtures/demo.json` (with `backup_1.json` and `backup_2.json` also available via `GET /api/fixtures` or `&fixture=backup_1`) with realistic courtroom pacing (`0.5s`–`2.0s` per event) and zero network or API calls.
 
-You can also stream directly from the terminal:
+You can also stream directly from PowerShell:
 
-```bash
-curl -N "http://localhost:8000/api/trial?replay=true"
+```powershell
+curl.exe -N "http://127.0.0.1:8000/api/trial?replay=true"
 ```
 
 ---
@@ -70,8 +87,8 @@ curl -N "http://localhost:8000/api/trial?replay=true"
 
 Run the full unit and integration test suite (sandbox classification, AST symbol checks, deterministic scoring, agent retry/rate-limit handling, and SSE streaming):
 
-```bash
-pytest tests/ -v
+```powershell
+python -m pytest tests/ -v
 ```
 
 ---
@@ -79,7 +96,7 @@ pytest tests/ -v
 ## 2-Minute Hackathon Demo Script
 
 ### **0:00 – 0:20 | The Hook & The Problem**
-- **Show:** The PR Courtroom black-theme courtroom UI at `http://localhost:8000`.
+- **Show:** The PR Courtroom black-theme courtroom UI at `http://127.0.0.1:8000`.
 - **Say:** *"Traditional AI code reviewers flood PRs with unverified opinions and false positives. **PR Courtroom gives evidence.** In our courtroom, an AI Prosecutor isn't allowed to just claim a bug exists—it must write a `pytest` test that actually fails in an isolated sandbox."*
 
 ### **0:20 – 0:45 | Filing the Indictment & Sandbox Evidence**
