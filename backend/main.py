@@ -50,7 +50,16 @@ async def api_trial(
     fixture: str = Query(default="demo"),
 ) -> StreamingResponse:
     async def event_stream() -> AsyncIterator[str]:
-        if replay:
+        use_replay = replay
+        if use_replay and pr_url.strip():
+            try:
+                owner, repo, _ = parse_pr_url(pr_url)
+                if not (owner.lower() == "demo" and repo.lower() == "shop"):
+                    use_replay = False
+            except ValueError:
+                pass
+
+        if use_replay:
             async for ev_name, ev_data in replay_trial(fixture_name=fixture):
                 yield _format_sse(ev_name, ev_data)
             return

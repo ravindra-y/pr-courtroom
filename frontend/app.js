@@ -1034,7 +1034,7 @@ function closeEventSource() {
 function connect() {
   closeEventSource();
 
-  const replay = Boolean(dom.replayCheckbox.checked);
+  let replay = Boolean(dom.replayCheckbox.checked);
   const rawUrl = dom.prUrlInput.value.trim();
 
   // If replay mode is ON and URL is empty, auto-fill demo PR URL for convenience
@@ -1056,6 +1056,21 @@ function connect() {
 
   const normalizedUrl = check.valid ? check.normalized : DEMO_PR_URL;
   dom.prUrlInput.value = normalizedUrl;
+
+  // If the user entered a real (non-demo) PR URL, run it live instead of replaying demo.json
+  if (
+    check.valid &&
+    normalizedUrl.toLowerCase() !== DEMO_PR_URL.toLowerCase() &&
+    replay
+  ) {
+    replay = false;
+    dom.replayCheckbox.checked = false;
+    try {
+      localStorage.setItem(REPLAY_STORAGE_KEY, "false");
+    } catch (_) {
+      // Ignore storage errors
+    }
+  }
 
   resetCourtroomUI();
   trialState.prUrl = normalizedUrl;
@@ -1152,6 +1167,14 @@ function init() {
     if (res.valid) {
       dom.prUrlInput.classList.remove("input-invalid");
       dom.urlValidationMsg.textContent = "";
+      if (res.normalized.toLowerCase() !== DEMO_PR_URL.toLowerCase()) {
+        dom.replayCheckbox.checked = false;
+        try {
+          localStorage.setItem(REPLAY_STORAGE_KEY, "false");
+        } catch (_) {
+          // Ignore storage errors
+        }
+      }
     } else {
       dom.prUrlInput.classList.add("input-invalid");
       dom.urlValidationMsg.textContent = res.message;
@@ -1166,9 +1189,13 @@ function init() {
     dom.prUrlInput.focus();
   });
 
-  // Idle empty state button: fills demo PR and starts trial
+  // Idle empty state button: runs entered PR URL if valid, otherwise fills demo PR and starts trial
   dom.idleDemoBtn.addEventListener("click", () => {
-    dom.prUrlInput.value = DEMO_PR_URL;
+    const existing = dom.prUrlInput.value.trim();
+    const res = validatePrUrl(existing);
+    if (!existing || !res.valid) {
+      dom.prUrlInput.value = DEMO_PR_URL;
+    }
     dom.prUrlInput.classList.remove("input-invalid");
     dom.urlValidationMsg.textContent = "";
     connect();
@@ -1197,9 +1224,7 @@ function init() {
     } catch (_) {
       // Ignore
     }
-    if (!dom.prUrlInput.value.trim() || !validatePrUrl(dom.prUrlInput.value).valid) {
-      dom.prUrlInput.value = DEMO_PR_URL;
-    }
+    dom.prUrlInput.value = DEMO_PR_URL;
     connect();
   });
 }

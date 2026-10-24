@@ -60,24 +60,28 @@ def parse_pr_url(url: str) -> tuple[str, str, int]:
     return owner, repo, number
 
 
-def _get_token() -> str:
+def _get_token() -> str | None:
     load_dotenv()
     token = os.getenv("GITHUB_TOKEN", "").strip()
-    if not token:
-        raise GitHubClientError(
-            "Missing GITHUB_TOKEN. Please set GITHUB_TOKEN in your .env file."
-        )
+    if not token or (token.startswith("<") and token.endswith(">")):
+        return None
     return token
 
 
-def _build_headers(accept: str = "application/vnd.github+json") -> dict[str, str]:
-    token = _get_token()
-    return {
+def _build_headers(
+    accept: str = "application/vnd.github+json",
+    include_auth: bool = True,
+) -> dict[str, str]:
+    headers = {
         "Accept": accept,
-        "Authorization": f"Bearer {token}",
         "User-Agent": "pr-courtroom",
         "X-GitHub-Api-Version": "2022-11-28",
     }
+    if include_auth:
+        token = _get_token()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+    return headers
 
 
 def _check_response(resp: httpx.Response, context: str) -> None:
@@ -181,6 +185,16 @@ async def get_pr(owner: str, repo: str, number: int) -> dict:
                     params={"per_page": 100},
                 ),
             )
+            if meta_resp.status_code == 401 and _get_token() is not None:
+                meta_resp, diff_resp, files_resp = await asyncio.gather(
+                    client.get(pr_endpoint, headers=_build_headers("application/vnd.github+json", include_auth=False)),
+                    client.get(pr_endpoint, headers=_build_headers("application/vnd.github.v3.diff", include_auth=False)),
+                    client.get(
+                        files_endpoint,
+                        headers=_build_headers("application/vnd.github+json", include_auth=False),
+                        params={"per_page": 100},
+                    ),
+                )
         except httpx.RequestError as exc:
             raise GitHubClientError(
                 f"Network error while contacting GitHub for {context_label}: {exc}"
@@ -266,6 +280,13 @@ async def download_repo(
         ) as client:
             try:
                 resp = await client.get(url, headers=headers)
+                if resp.status_code == 401 and _get_token() is not None:
+                    resp = await client.get(
+                        url,
+                        headers=_build_headers(
+                            "application/vnd.github+json", include_auth=False
+                        ),
+                    )
             except httpx.RequestError as exc:
                 raise GitHubClientError(
                     f"Network error downloading {owner}/{repo}@{sha}: {exc}"

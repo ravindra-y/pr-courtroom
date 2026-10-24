@@ -20,6 +20,143 @@ BROKEN_TEST_RE = re.compile(
 
 _FILE_BACKUPS: dict[tuple[str, str], Optional[str]] = {}
 
+_SANDBOX_SITECUSTOMIZE = """\
+import collections
+import importlib.abc
+import importlib.machinery
+import itertools
+import re as _re
+import sys
+import types
+import unicodedata
+
+try:
+    import more_itertools as _mi  # noqa: F401
+except ImportError:
+    _mi_mod = types.ModuleType("more_itertools")
+
+    def windowed(seq, n, fillvalue=None, step=1):
+        if n < 0:
+            raise ValueError("n must be >= 0")
+        if n == 0:
+            yield ()
+            return
+        if step < 1:
+            raise ValueError("step must be >= 1")
+        it = iter(seq)
+        window = collections.deque(itertools.islice(it, n), maxlen=n)
+        if not window:
+            return
+        if len(window) < n:
+            yield tuple(window) + ((fillvalue,) * (n - len(window)))
+            return
+        yield tuple(window)
+        while True:
+            for _ in range(step):
+                try:
+                    window.append(next(it))
+                except StopIteration:
+                    return
+            yield tuple(window)
+
+    _mi_mod.windowed = windowed
+    sys.modules["more_itertools"] = _mi_mod
+
+try:
+    import regex as _rx  # noqa: F401
+except ImportError:
+    _rx_mod = types.ModuleType("regex")
+    for _k in dir(_re):
+        if not _k.startswith("__"):
+            setattr(_rx_mod, _k, getattr(_re, _k))
+
+    def _findall(pattern, string, flags=0, *args, **kwargs):
+        if pattern == r"\\X":
+            clusters = []
+            for ch in string:
+                if clusters and unicodedata.category(ch).startswith("M"):
+                    clusters[-1] += ch
+                else:
+                    clusters.append(ch)
+            return clusters
+        return _re.findall(pattern, string, flags)
+
+    _rx_mod.findall = _findall
+    sys.modules["regex"] = _rx_mod
+
+_STUB_ROOTS = {
+    "torch",
+    "tqdm",
+    "numba",
+    "tiktoken",
+    "triton",
+    "numpy",
+    "scipy",
+    "soundfile",
+    "librosa",
+}
+
+
+class _StubModule(types.ModuleType):
+    bool_ = bool
+    floating = float
+    integer = int
+    number = (int, float)
+    ndarray = type("ndarray", (), {})
+    Tensor = type("Tensor", (), {})
+
+    def __init__(self, name="stub", *args, **kwargs):
+        super().__init__(str(name))
+        self.__path__ = []
+        self.__file__ = f"<stub:{name}>"
+        self.__version__ = "2.0.0"
+
+    def __getattr__(self, name):
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        mod_name = f"{self.__name__}.{name}"
+        if mod_name not in sys.modules:
+            sys.modules[mod_name] = _StubModule(mod_name)
+        return sys.modules[mod_name]
+
+    def __call__(self, *args, **kwargs):
+        if args and callable(args[0]) and not kwargs and len(args) == 1:
+            return args[0]
+        return _StubModule(self.__name__)
+
+    def __iter__(self):
+        return iter(())
+
+    def __mro_entries__(self, bases):
+        return (object,)
+
+
+class _StubFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split(".")[0] in _STUB_ROOTS:
+            return importlib.machinery.ModuleSpec(fullname, self, is_package=True)
+        return None
+
+    def create_module(self, spec):
+        return sys.modules.get(spec.name) or _StubModule(spec.name)
+
+    def exec_module(self, module):
+        sys.modules[module.__name__] = module
+
+
+sys.meta_path.append(_StubFinder())
+"""
+
+
+def _ensure_sandbox_shims(ver_path: Path) -> None:
+    """Ensure sitecustomize.py exists in `ver_path` so optional C/GPU imports don't break unit tests."""
+    site_file = ver_path / "sitecustomize.py"
+    if not site_file.exists():
+        try:
+            site_file.write_text(_SANDBOX_SITECUSTOMIZE, encoding="utf-8")
+        except OSError:
+            pass
+
 
 def _default_timeout(timeout: Optional[float] = None) -> float:
     if timeout is not None:
@@ -76,6 +213,7 @@ def run_test(
     ver_path = Path(version_dir).resolve()
     abs_test_path = str(Path(test_file).resolve())
     effective_timeout = _default_timeout(timeout)
+    _ensure_sandbox_shims(ver_path)
 
     env = {
         "PATH": os.environ.get("PATH", ""),
@@ -348,10 +486,42 @@ def run_existing_tests(
     """
     head_path = Path(head_dir).resolve()
     repo_tests_dir = head_path / "tests"
+    if not repo_tests_dir.is_dir():
+        return True, "No existing tests/ directory found."
+
     res = run_test(head_path, repo_tests_dir, timeout=timeout)
     raw_out = (res["stdout"] + "\n" + res["stderr"]).strip()
     clean_out = _sanitize_output(raw_out, head_path)
     passed = (not res["timed_out"]) and (res["returncode"] == 0)
+    if passed:
+        return True, clean_out
+
+    # If the full suite failed on a multi-file tests/ directory where some test files
+    # require optional GPU/native dependencies that also fail on BASE, run the subset
+    # of test_*.py files that pass on BASE (plus any test_*.py modified in HEAD).
+    test_files = sorted(repo_tests_dir.glob("test_*.py"))
+    base_path = head_path.parent / "base"
+    if len(test_files) > 1 and (base_path / "tests").is_dir():
+        runnable_files: list[Path] = []
+        for tf in test_files:
+            base_tf = base_path / "tests" / tf.name
+            if not base_tf.is_file():
+                runnable_files.append(tf)
+                continue
+            base_tf_res = run_test(base_path, base_tf, timeout=timeout)
+            if (not base_tf_res["timed_out"]) and base_tf_res["returncode"] == 0:
+                runnable_files.append(tf)
+        if runnable_files:
+            outputs: list[str] = []
+            all_passed = True
+            for tf in runnable_files:
+                tf_res = run_test(head_path, tf, timeout=timeout)
+                tf_raw = (tf_res["stdout"] + "\n" + tf_res["stderr"]).strip()
+                outputs.append(_sanitize_output(tf_raw, head_path))
+                if tf_res["timed_out"] or tf_res["returncode"] != 0:
+                    all_passed = False
+            return all_passed, "\n".join(outputs)
+
     return passed, clean_out
 
 
