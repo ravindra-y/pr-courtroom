@@ -6,7 +6,7 @@ Pitch: "AI reviewers give opinions. PR Courtroom gives evidence."
 Event: Google Gemini Hackathon, 8-hour build. Everything runs locally. Python projects only. Demo repo only.
 
 ## Stack (do not change)
-Python 3.11, FastAPI, Uvicorn, Pydantic v2, google-genai SDK (Gemini Flash via GEMINI_MODEL_FAST), httpx, pytest, pytest-timeout, python-dotenv.
+Python 3.13 (3.11+ compatible), FastAPI, Uvicorn, Pydantic v2, google-genai SDK (Gemini Flash via GEMINI_MODEL_FAST), httpx, pytest, pytest-timeout, python-dotenv.
 Frontend (built later): plain HTML, CSS, JavaScript with EventSource. No framework, no build step, served by FastAPI StaticFiles.
 No database. No auth. No Docker.
 

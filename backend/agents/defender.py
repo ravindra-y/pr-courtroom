@@ -59,7 +59,7 @@ def _collect_involved_files(
     files_with_content: list[tuple[str, str]] = []
     for rel in rel_paths:
         full_path = (head_path / rel).resolve()
-        if not str(full_path).startswith(str(head_path)):
+        if not full_path.is_relative_to(head_path) or full_path == head_path:
             continue
         if full_path.is_file():
             try:

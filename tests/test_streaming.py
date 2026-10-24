@@ -18,7 +18,7 @@ from backend.models import (
 )
 from backend.orchestrator import run_trial
 from backend.replay import FIXTURES_DIR, list_fixtures, replay_trial
-from backend.sandbox import run_test
+from backend.sandbox import _sanitize_output, run_test
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -389,13 +389,33 @@ def test_sandbox_env_contains_only_path_and_pythonpath_and_no_secrets(
         res = run_test(tmp_path, test_file)
 
     assert res["returncode"] == 0
-    assert set(captured_env.keys()) == {"PATH", "PYTHONPATH"}
+    import os as _os
+
+    expected_keys = {"PATH", "PYTHONPATH"}
+    if _os.name == "nt" and "SYSTEMROOT" in _os.environ:
+        expected_keys.add("SYSTEMROOT")
+    assert set(captured_env.keys()) == expected_keys
 
     leaked = "Error with AIzaSecretKey123456789 and ghp_SecretToken123456789"
     cleaned = redact_secrets(leaked)
     assert "AIzaSecretKey123456789" not in cleaned
     assert "ghp_SecretToken123456789" not in cleaned
     assert "[REDACTED]" in cleaned
+
+
+def test_windows_backslash_path_sanitization() -> None:
+    raw = (
+        r"C:\Users\dev\pr-courtroom\workdir\run1\head\shop\cart.py:3: ZeroDivisionError"
+        "\n"
+        r"FAILED C:\Users\dev\AppData\Local\Temp\run1\tests_generated\test_C1.py::test_empty"
+    )
+    sanitized = _sanitize_output(
+        raw, r"C:\Users\dev\pr-courtroom\workdir\run1\head"
+    )
+    assert r"C:\Users\dev\pr-courtroom\workdir\run1\head" not in sanitized
+    assert "shop\\cart.py:3: ZeroDivisionError" in sanitized or "shop/cart.py:3: ZeroDivisionError" in sanitized
+    assert r"tests_generated\test_C1.py::test_empty" in sanitized
+
 
 
 def test_fastapi_sse_endpoints() -> None:

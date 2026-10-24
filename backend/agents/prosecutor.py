@@ -23,7 +23,7 @@ def _read_changed_python_files(pr: dict, head_dir: str | Path) -> list[tuple[str
         if not str(rel_path).endswith(".py"):
             continue
         candidate = (head_path / rel_path).resolve()
-        if not str(candidate).startswith(str(head_path)):
+        if not candidate.is_relative_to(head_path) or candidate == head_path:
             continue
         if candidate.is_file():
             try:

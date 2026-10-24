@@ -113,7 +113,7 @@ def _build_local_demo_zip(src_dir: Path, top_folder: str) -> tuple[str, bytes]:
             if "__pycache__" in rel.parts or ".pytest_cache" in rel.parts:
                 continue
             data = file_path.read_bytes()
-            hasher.update(str(rel).encode("utf-8"))
+            hasher.update(rel.as_posix().encode("utf-8"))
             hasher.update(data)
             zf.writestr(f"{top_folder}/{rel.as_posix()}", data)
     sha = hasher.hexdigest()
@@ -235,7 +235,7 @@ def _extract_zip_flattened(zip_bytes: bytes, dest_dir: Path) -> None:
             if not rel_parts:
                 continue
             target_path = (resolved_dest / Path(*rel_parts)).resolve()
-            if not str(target_path).startswith(str(resolved_dest) + os.sep):
+            if not target_path.is_relative_to(resolved_dest) or target_path == resolved_dest:
                 raise GitHubClientError(f"Unsafe path in zip archive: {member.filename}")
             target_path.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(member, "r") as src, open(target_path, "wb") as dst:
