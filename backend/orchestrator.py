@@ -1,17 +1,22 @@
 import asyncio
+import re
+import shutil
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, AsyncIterator, Iterable, Optional
 
 from backend.agents.defender import defend
+from backend.agents.gemini_client import GeminiClientError
 from backend.agents.judge import build_computed_context, judge
 from backend.agents.prosecutor import prosecute
-from backend.github_client import prepare_workspace
+from backend.github_client import GitHubClientError, WORKDIR_ROOT, parse_pr_url, prepare_workspace
 from backend.models import Charge, DefenseResponse, TestResult
+from backend.replay import clamp_delay, save_fixture
 from backend.sandbox import (
     apply_fix_async,
     classify_all_async,
+    classify_async,
     revert_fix,
     run_after_fix_async,
     run_existing_tests_async,
@@ -68,6 +73,7 @@ async def execute_fix_loop(
     """
     head_path = Path(head_dir).resolve()
     charges_by_id = {c.id: c for c in valid_charges}
+    initial_new_code_by_id: dict[str, bool] = {}
     grouped = group_fixes_by_file(responses)
 
     fix_results: list[dict[str, Any]] = []
@@ -79,6 +85,21 @@ async def execute_fix_loop(
 
         diff = await apply_fix_async(head_path, file_path, fixed_code)
         existing_passed, existing_output = await run_existing_tests_async(head_path)
+
+        related_charges = [
+            charges_by_id[cid] for cid in charge_ids if cid in charges_by_id
+        ]
+        retest_results = list(
+            await asyncio.gather(
+                *(
+                    run_after_fix_async(c, head_path, tests_dir)
+                    for c in related_charges
+                )
+            )
+        )
+        for r in retest_results:
+            if r.charge_id in initial_new_code_by_id:
+                r.new_code = initial_new_code_by_id[r.charge_id]
 
         if not existing_passed:
             await asyncio.to_thread(revert_fix, head_path, file_path)
@@ -92,23 +113,13 @@ async def execute_fix_loop(
                     "diff": diff,
                     "existing_tests_passed": False,
                     "existing_tests_output": existing_output,
+                    "after_fix_results": retest_results,
                 }
             )
+            after_fix_results.extend(retest_results)
             continue
 
-        related_charges = [
-            charges_by_id[cid] for cid in charge_ids if cid in charges_by_id
-        ]
-        retest_results = list(
-            await asyncio.gather(
-                *(
-                    run_after_fix_async(c, head_path, tests_dir)
-                    for c in related_charges
-                )
-            )
-        )
         after_fix_results.extend(retest_results)
-
         all_charges_passed = all(r.status == "pass" for r in retest_results)
         if not all_charges_passed:
             await asyncio.to_thread(revert_fix, head_path, file_path)
@@ -122,6 +133,7 @@ async def execute_fix_loop(
                     "diff": diff,
                     "existing_tests_passed": True,
                     "existing_tests_output": existing_output,
+                    "after_fix_results": retest_results,
                 }
             )
         else:
@@ -135,6 +147,7 @@ async def execute_fix_loop(
                     "diff": diff,
                     "existing_tests_passed": True,
                     "existing_tests_output": existing_output,
+                    "after_fix_results": retest_results,
                 }
             )
 
@@ -167,112 +180,248 @@ async def run_defense_and_fixes(
     )
 
 
+def _drop_reason(status: str) -> Optional[str]:
+    if status == "pass":
+        return "overruled by evidence"
+    if status in ("error", "timeout"):
+        return "broken test"
+    if status == "fail_preexisting":
+        return "pre-existing"
+    return None
+
+
+def _sanitize_error_message(exc: Exception) -> str:
+    """Return a clean, user-friendly error message without stack traces or secrets."""
+    if isinstance(exc, (ValueError, GitHubClientError, GeminiClientError)):
+        msg = str(exc)
+    else:
+        msg = f"Trial execution encountered an unexpected error ({type(exc).__name__})."
+    # Redact anything that looks like a token or key just in case
+    msg = re.sub(r"(ghp_[A-Za-z0-9_]+|ghs_[A-Za-z0-9_]+|AIza[A-Za-z0-9_-]+)", "[REDACTED]", msg)
+    return msg
+
+
+async def run_trial(
+    pr_url: str,
+    run_id: Optional[str] = None,
+) -> AsyncIterator[tuple[str, dict[str, Any]]]:
+    """
+    Async generator that orchestrates a full trial and yields (event_name, data_dict)
+    in the exact order specified by AGENTS.md:
+      1. trial_started {pr_title, files_changed, pr_url}
+      2. charge_filed {Charge}
+      3. test_result {TestResult} (and charge_dropped {charge_id, reason} if dropped)
+      4. defense {DefenseResponse}
+      5. fix_applied {charge_id, diff, existing_tests_passed}, then test_result (phase "after_fix")
+      6. verdict {JudgeOutput fields, verdict, confidence, stats}
+      7. error {message} on any exception
+    Saves all yielded events with clamped delays (0.5..2.0s) to backend/fixtures/<run_id>.json
+    and cleans up workdir/<run_id> at the end.
+    """
+    effective_run_id = run_id or f"run_{uuid.uuid4().hex[:8]}"
+    start_ts = time.perf_counter()
+    prev_ts = start_ts
+    recorded: list[dict[str, Any]] = []
+
+    def record(event_name: str, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        nonlocal prev_ts
+        now = time.perf_counter()
+        delay = clamp_delay(now - prev_ts)
+        prev_ts = now
+        recorded.append({"event": event_name, "data": payload, "delay": delay})
+        return event_name, payload
+
+    try:
+        parse_pr_url(pr_url)
+        workspace = await prepare_workspace(pr_url, effective_run_id)
+
+        yield record(
+            "trial_started",
+            {
+                "pr_title": workspace["title"],
+                "files_changed": workspace["changed_files"],
+                "pr_url": pr_url,
+            },
+        )
+
+        prosecutor_output = await prosecute(workspace, workspace["head_dir"])
+        charges = prosecutor_output.charges[:3]
+        charges_by_id = {c.id: c for c in charges}
+
+        for charge in charges:
+            yield record("charge_filed", charge.model_dump())
+
+        # Run initial evidence tests in parallel and yield each as it finishes
+        tasks = [
+            asyncio.create_task(
+                classify_async(
+                    charge,
+                    head_dir=workspace["head_dir"],
+                    base_dir=workspace["base_dir"],
+                )
+            )
+            for charge in charges
+        ]
+
+        initial_results: list[TestResult] = []
+        initial_by_id: dict[str, TestResult] = {}
+        charges_dropped_count = 0
+
+        for finished_task in asyncio.as_completed(tasks):
+            res = await finished_task
+            initial_results.append(res)
+            initial_by_id[res.charge_id] = res
+            yield record("test_result", res.model_dump())
+
+            reason = _drop_reason(res.status)
+            if reason is not None:
+                charges_dropped_count += 1
+                yield record(
+                    "charge_dropped",
+                    {"charge_id": res.charge_id, "reason": reason},
+                )
+
+        # Preserve charge ordering for valid charges
+        valid_charges = [
+            c
+            for c in charges
+            if c.id in initial_by_id and initial_by_id[c.id].status == "fail_valid"
+        ]
+
+        responses: list[DefenseResponse] = []
+        if valid_charges:
+            defender_output = await defend(
+                pr=workspace,
+                valid_charges=valid_charges,
+                test_results=initial_by_id,
+                head_dir=workspace["head_dir"],
+            )
+            responses = defender_output.responses
+            for resp in responses:
+                yield record("defense", resp.model_dump())
+
+        fix_loop_out = await execute_fix_loop(
+            valid_charges=valid_charges,
+            responses=responses,
+            head_dir=workspace["head_dir"],
+        )
+        fix_results: list[dict[str, Any]] = fix_loop_out["fix_results"]
+        after_fix_results: list[TestResult] = fix_loop_out["after_fix_results"]
+        after_fix_by_id = {r.charge_id: r for r in after_fix_results}
+
+        for fx in fix_results:
+            diff_str = fx.get("diff", "")
+            existing_passed = bool(fx.get("existing_tests_passed", True))
+            for cid in fx.get("charge_ids", []):
+                yield record(
+                    "fix_applied",
+                    {
+                        "charge_id": cid,
+                        "diff": diff_str,
+                        "existing_tests_passed": existing_passed,
+                    },
+                )
+                after_tr = after_fix_by_id.get(cid)
+                if after_tr is not None:
+                    if cid in initial_by_id:
+                        after_tr.new_code = initial_by_id[cid].new_code
+                    yield record("test_result", after_tr.model_dump())
+
+        existing_tests_passed = all(
+            fx.get("existing_tests_passed", True) for fx in fix_results
+        )
+        fixes_applied_count = sum(
+            len(fx.get("charge_ids", [])) for fx in fix_results if fx.get("applied")
+        )
+
+        transcript = {
+            "charges": charges,
+            "valid_charges": valid_charges,
+            "initial_test_results": initial_results,
+            "defender_responses": responses,
+            "fix_results": fix_results,
+            "after_fix_test_results": after_fix_results,
+        }
+        computed_context = build_computed_context(
+            valid_charges=valid_charges,
+            defender_responses=responses,
+            fix_results=fix_results,
+            after_fix_results=after_fix_results,
+            existing_tests_passed=existing_tests_passed,
+        )
+
+        judge_output = await judge(
+            pr=workspace,
+            transcript=transcript,
+            computed_context=computed_context,
+        )
+
+        standing = standing_charges(valid_charges, judge_output.rebuttal_rulings)
+        dismissed_by_rebuttal = any(r.upheld for r in judge_output.rebuttal_rulings)
+        verdict, confidence = compute_verdict(
+            standing=standing,
+            fix_results=fix_results,
+            after_fix_results=after_fix_results,
+            any_valid_evidence=len(valid_charges) > 0,
+            dismissed_by_rebuttal=dismissed_by_rebuttal,
+            existing_tests_passed=existing_tests_passed,
+        )
+
+        duration_s = round(time.perf_counter() - start_ts, 2)
+        stats = {
+            "duration_s": duration_s,
+            "charges_filed": len(charges),
+            "charges_valid": len(valid_charges),
+            "charges_dropped": charges_dropped_count,
+            "fixes_applied": fixes_applied_count,
+            "existing_tests_passed": existing_tests_passed,
+        }
+
+        verdict_data = {
+            **judge_output.model_dump(),
+            "verdict": verdict,
+            "confidence": confidence,
+            "stats": stats,
+        }
+        yield record("verdict", verdict_data)
+
+        save_fixture(effective_run_id, recorded)
+
+    except Exception as exc:
+        yield ("error", {"message": _sanitize_error_message(exc)})
+    finally:
+        run_workdir = WORKDIR_ROOT / str(effective_run_id)
+        if run_workdir.exists():
+            shutil.rmtree(run_workdir, ignore_errors=True)
+
+
 async def run_full_trial(
     pr_url: str,
     run_id: Optional[str] = None,
 ) -> dict[str, Any]:
-    """
-    Execute the complete trial pipeline:
-    1. Fetch PR & prepare workspace
-    2. Prosecutor files charges
-    3. Sandbox classifies charges in parallel
-    4. Defender responds to valid charges & fix loop executes
-    5. Judge rules on rebuttals & writes ruling
-    6. Scoring deterministically computes verdict & confidence
-    """
-    start_ts = time.perf_counter()
+    """Run a trial to completion and return a summary dict (used by run_trial.py CLI)."""
     effective_run_id = run_id or f"trial_{uuid.uuid4().hex[:8]}"
+    events: list[tuple[str, dict[str, Any]]] = []
+    async for ev_name, ev_data in run_trial(pr_url, effective_run_id):
+        events.append((ev_name, ev_data))
+        if ev_name == "error":
+            raise GeminiClientError(ev_data["message"])
 
-    workspace = await prepare_workspace(pr_url, effective_run_id)
-    prosecutor_output = await prosecute(workspace, workspace["head_dir"])
-    charges = prosecutor_output.charges
+    started = next(d for n, d in events if n == "trial_started")
+    verdict_ev = next(d for n, d in events if n == "verdict")
+    from backend.models import JudgeOutput
 
-    initial_results = await classify_all_async(
-        charges,
-        head_dir=workspace["head_dir"],
-        base_dir=workspace["base_dir"],
+    judge_out = JudgeOutput(
+        rebuttal_rulings=verdict_ev["rebuttal_rulings"],
+        ruling=verdict_ev["ruling"],
+        summary=verdict_ev["summary"],
     )
-
-    valid_charges: list[Charge] = []
-    charges_dropped = 0
-    for charge, res in zip(charges, initial_results):
-        if res.status == "fail_valid":
-            valid_charges.append(charge)
-        else:
-            charges_dropped += 1
-
-    defense_stage = await run_defense_and_fixes(
-        pr=workspace,
-        valid_charges=valid_charges,
-        test_results=initial_results,
-        head_dir=workspace["head_dir"],
-    )
-
-    responses: list[DefenseResponse] = defense_stage["responses"]
-    fix_results: list[dict[str, Any]] = defense_stage["fix_results"]
-    after_fix_results: list[TestResult] = defense_stage["after_fix_results"]
-
-    existing_tests_passed = all(
-        fx.get("existing_tests_passed", True) for fx in fix_results
-    )
-    fixes_applied = sum(
-        len(fx.get("charge_ids", [])) for fx in fix_results if fx.get("applied")
-    )
-
-    transcript = {
-        "charges": charges,
-        "valid_charges": valid_charges,
-        "initial_test_results": initial_results,
-        "defender_responses": responses,
-        "fix_results": fix_results,
-        "after_fix_test_results": after_fix_results,
-    }
-    computed_context = build_computed_context(
-        valid_charges=valid_charges,
-        defender_responses=responses,
-        fix_results=fix_results,
-        after_fix_results=after_fix_results,
-        existing_tests_passed=existing_tests_passed,
-    )
-
-    judge_output = await judge(
-        pr=workspace,
-        transcript=transcript,
-        computed_context=computed_context,
-    )
-
-    standing = standing_charges(valid_charges, judge_output.rebuttal_rulings)
-    dismissed_by_rebuttal = any(r.upheld for r in judge_output.rebuttal_rulings)
-    verdict, confidence = compute_verdict(
-        standing=standing,
-        fix_results=fix_results,
-        after_fix_results=after_fix_results,
-        any_valid_evidence=len(valid_charges) > 0,
-        dismissed_by_rebuttal=dismissed_by_rebuttal,
-        existing_tests_passed=existing_tests_passed,
-    )
-
-    duration_s = round(time.perf_counter() - start_ts, 2)
-    stats = {
-        "duration_s": duration_s,
-        "charges_filed": len(charges),
-        "charges_valid": len(valid_charges),
-        "charges_dropped": charges_dropped,
-        "fixes_applied": fixes_applied,
-        "existing_tests_passed": existing_tests_passed,
-    }
-
     return {
-        "pr": workspace,
-        "charges": charges,
-        "initial_results": initial_results,
-        "valid_charges": valid_charges,
-        "defender_responses": responses,
-        "fix_results": fix_results,
-        "after_fix_results": after_fix_results,
-        "judge_output": judge_output,
-        "verdict": verdict,
-        "confidence": confidence,
-        "stats": stats,
-        "duration_s": duration_s,
+        "pr": {"title": started["pr_title"], "changed_files": started["files_changed"]},
+        "judge_output": judge_out,
+        "verdict": verdict_ev["verdict"],
+        "confidence": verdict_ev["confidence"],
+        "stats": verdict_ev["stats"],
+        "duration_s": verdict_ev["stats"]["duration_s"],
+        "events": events,
     }

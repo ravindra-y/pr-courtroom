@@ -1,0 +1,186 @@
+[
+  {
+    "event": "trial_started",
+    "data": {
+      "pr_title": "Add discounts and bulk pricing",
+      "files_changed": [
+        "shop/cart.py"
+      ],
+      "pr_url": "https://github.com/demo/shop/pull/1"
+    },
+    "delay": 0.5
+  },
+  {
+    "event": "charge_filed",
+    "data": {
+      "id": "C1",
+      "title": "ZeroDivisionError when cart_total is called with an empty cart",
+      "severity": "high",
+      "explanation": "cart_total divides subtotal by len(items) without checking if items is empty, raising ZeroDivisionError on cart_total([]) whereas base returned 0.",
+      "target_symbol": "shop.cart.cart_total",
+      "intended_behavior": "implied by function name and base behavior: an empty cart has total 0",
+      "test_code": "from shop.cart import cart_total\n\ndef test_empty_cart_returns_zero():\n    assert cart_total([]) == 0, 'Empty cart should return 0 instead of raising ZeroDivisionError'\n"
+    },
+    "delay": 0.6
+  },
+  {
+    "event": "charge_filed",
+    "data": {
+      "id": "C2",
+      "title": "apply_discount accepts out-of-range percent values (> 100 or < 0)",
+      "severity": "high",
+      "explanation": "The docstring states 'percent must be between 0 and 100 inclusive', but apply_discount never validates percent, returning negative totals when percent > 100.",
+      "target_symbol": "shop.cart.apply_discount",
+      "intended_behavior": "percent must be between 0 and 100 inclusive.",
+      "test_code": "import pytest\nfrom shop.cart import apply_discount\n\ndef test_percent_over_100_rejected():\n    items = [{'price': 50, 'qty': 1}]\n    with pytest.raises(ValueError):\n        apply_discount(items, 150)\n"
+    },
+    "delay": 0.5
+  },
+  {
+    "event": "charge_filed",
+    "data": {
+      "id": "C3",
+      "title": "apply_discount raises ValueError on negative item quantity",
+      "severity": "low",
+      "explanation": "Passing an item with negative qty to apply_discount raises ValueError instead of subtracting the refund amount from the total.",
+      "target_symbol": "shop.cart.apply_discount",
+      "intended_behavior": "implied by function name",
+      "test_code": "from shop.cart import apply_discount\n\ndef test_negative_quantity_allowed():\n    items = [{'price': 20, 'qty': 2}, {'price': 10, 'qty': -1}]\n    assert apply_discount(items, 10) == 27.0\n"
+    },
+    "delay": 0.5
+  },
+  {
+    "event": "test_result",
+    "data": {
+      "charge_id": "C1",
+      "status": "fail_valid",
+      "new_code": false,
+      "output": "============================= test session starts ==============================\ncollected 1 item\n\ntest_charge_C1.py F                                                      [100%]\n\n=================================== FAILURES ===================================\n_________________________ test_empty_cart_returns_zero _________________________\n\n    def test_empty_cart_returns_zero():\n>       assert cart_total([]) == 0\n\ntest_charge_C1.py:4: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nitems = []\n\n    def cart_total(items):\n        subtotal = sum(item[\"price\"] * item[\"qty\"] for item in items)\n>       avg = subtotal / len(items)\nE       ZeroDivisionError: division by zero\n\nshop/cart.py:3: ZeroDivisionError\n=========================== short test summary info ============================\nFAILED test_charge_C1.py::test_empty_cart_returns_zero - ZeroDivisionError: division by zero\n============================== 1 failed in 0.11s ===============================",
+      "phase": "initial"
+    },
+    "delay": 0.8
+  },
+  {
+    "event": "test_result",
+    "data": {
+      "charge_id": "C2",
+      "status": "fail_valid",
+      "new_code": true,
+      "output": "============================= test session starts ==============================\ncollected 1 item\n\ntest_charge_C2.py F                                                      [100%]\n\n=================================== FAILURES ===================================\n_________________________ test_percent_over_100_rejected _______________________\n\n    def test_percent_over_100_rejected():\n        items = [{'price': 50, 'qty': 1}]\n>       with pytest.raises(ValueError):\nE       Failed: DID NOT RAISE <class 'ValueError'>\n\ntest_charge_C2.py:6: Failed\n=========================== short test summary info ============================\nFAILED test_charge_C2.py::test_percent_over_100_rejected - Failed: DID NOT RAISE <class 'ValueError'>\n============================== 1 failed in 0.12s ===============================",
+      "phase": "initial"
+    },
+    "delay": 0.7
+  },
+  {
+    "event": "test_result",
+    "data": {
+      "charge_id": "C3",
+      "status": "fail_valid",
+      "new_code": true,
+      "output": "============================= test session starts ==============================\ncollected 1 item\n\ntest_charge_C3.py F                                                      [100%]\n\n=================================== FAILURES ===================================\n________________________ test_negative_quantity_allowed ________________________\n\n    def test_negative_quantity_allowed():\n        items = [{'price': 20, 'qty': 2}, {'price': 10, 'qty': -1}]\n>       assert apply_discount(items, 10) == 27.0\n\ntest_charge_C3.py:5: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\n    for item in items:\n        if item[\"qty\"] < 0:\n>           raise ValueError(\"Negative quantities are not allowed\")\nE           ValueError: Negative quantities are not allowed\n\nshop/cart.py:12: ValueError\n=========================== short test summary info ============================\nFAILED test_charge_C3.py::test_negative_quantity_allowed - ValueError: Negative quantities are not allowed\n============================== 1 failed in 0.11s ===============================",
+      "phase": "initial"
+    },
+    "delay": 0.7
+  },
+  {
+    "event": "defense",
+    "data": {
+      "charge_id": "C1",
+      "stance": "fix",
+      "reasoning": "cart_total divides by len(items) without guarding for an empty list. Returning 0 when items is empty restores base behavior and prevents ZeroDivisionError.",
+      "quoted_intent": null,
+      "fixed_file_path": "shop/cart.py",
+      "fixed_code": "def cart_total(items):\n    if not items:\n        return 0\n    subtotal = sum(item[\"price\"] * item[\"qty\"] for item in items)\n    avg = subtotal / len(items)\n    if avg > 100:\n        return subtotal * 0.95\n    return subtotal\n\n\ndef apply_discount(items, percent):\n    \"\"\"Return the cart total after a percentage discount. percent must be between 0 and 100 inclusive. Negative quantities are rejected with ValueError; this is intentional because returns are handled by a separate refund flow.\"\"\"\n    if percent < 0 or percent > 100:\n        raise ValueError(\"percent must be between 0 and 100 inclusive\")\n    for item in items:\n        if item[\"qty\"] < 0:\n            raise ValueError(\"Negative quantities are not allowed\")\n    total = cart_total(items)\n    return total - total * percent / 100\n"
+    },
+    "delay": 1.0
+  },
+  {
+    "event": "defense",
+    "data": {
+      "charge_id": "C2",
+      "stance": "fix",
+      "reasoning": "The docstring and PR description state that percent must be between 0 and 100 inclusive. Added a bounds check raising ValueError when percent < 0 or percent > 100.",
+      "quoted_intent": null,
+      "fixed_file_path": "shop/cart.py",
+      "fixed_code": "def cart_total(items):\n    if not items:\n        return 0\n    subtotal = sum(item[\"price\"] * item[\"qty\"] for item in items)\n    avg = subtotal / len(items)\n    if avg > 100:\n        return subtotal * 0.95\n    return subtotal\n\n\ndef apply_discount(items, percent):\n    \"\"\"Return the cart total after a percentage discount. percent must be between 0 and 100 inclusive. Negative quantities are rejected with ValueError; this is intentional because returns are handled by a separate refund flow.\"\"\"\n    if percent < 0 or percent > 100:\n        raise ValueError(\"percent must be between 0 and 100 inclusive\")\n    for item in items:\n        if item[\"qty\"] < 0:\n            raise ValueError(\"Negative quantities are not allowed\")\n    total = cart_total(items)\n    return total - total * percent / 100\n"
+    },
+    "delay": 0.6
+  },
+  {
+    "event": "defense",
+    "data": {
+      "charge_id": "C3",
+      "stance": "rebut",
+      "reasoning": "Both the PR description and the apply_discount docstring explicitly state that negative quantities are rejected with ValueError by design because refunds are handled elsewhere.",
+      "quoted_intent": "Negative quantities are rejected with ValueError; this is intentional because returns are handled by a separate refund flow.",
+      "fixed_file_path": null,
+      "fixed_code": null
+    },
+    "delay": 0.6
+  },
+  {
+    "event": "fix_applied",
+    "data": {
+      "charge_id": "C1",
+      "diff": "--- a/shop/cart.py\n+++ b/shop/cart.py\n@@ -1,4 +1,6 @@\n def cart_total(items):\n+    if not items:\n+        return 0\n     subtotal = sum(item[\"price\"] * item[\"qty\"] for item in items)\n     avg = subtotal / len(items)\n     if avg > 100:\n@@ -8,6 +10,8 @@\n \n def apply_discount(items, percent):\n     \"\"\"Return the cart total after a percentage discount. percent must be between 0 and 100 inclusive. Negative quantities are rejected with ValueError; this is intentional because returns are handled by a separate refund flow.\"\"\"\n+    if percent < 0 or percent > 100:\n+        raise ValueError(\"percent must be between 0 and 100 inclusive\")\n     for item in items:\n         if item[\"qty\"] < 0:\n             raise ValueError(\"Negative quantities are not allowed\")\n",
+      "existing_tests_passed": true
+    },
+    "delay": 0.9
+  },
+  {
+    "event": "test_result",
+    "data": {
+      "charge_id": "C1",
+      "status": "pass",
+      "new_code": false,
+      "output": "============================= test session starts ==============================\ncollected 1 item\n\ntest_charge_C1.py .                                                      [100%]\n\n============================== 1 passed in 0.08s ===============================",
+      "phase": "after_fix"
+    },
+    "delay": 0.6
+  },
+  {
+    "event": "fix_applied",
+    "data": {
+      "charge_id": "C2",
+      "diff": "--- a/shop/cart.py\n+++ b/shop/cart.py\n@@ -1,4 +1,6 @@\n def cart_total(items):\n+    if not items:\n+        return 0\n     subtotal = sum(item[\"price\"] * item[\"qty\"] for item in items)\n     avg = subtotal / len(items)\n     if avg > 100:\n@@ -8,6 +10,8 @@\n \n def apply_discount(items, percent):\n     \"\"\"Return the cart total after a percentage discount. percent must be between 0 and 100 inclusive. Negative quantities are rejected with ValueError; this is intentional because returns are handled by a separate refund flow.\"\"\"\n+    if percent < 0 or percent > 100:\n+        raise ValueError(\"percent must be between 0 and 100 inclusive\")\n     for item in items:\n         if item[\"qty\"] < 0:\n             raise ValueError(\"Negative quantities are not allowed\")\n",
+      "existing_tests_passed": true
+    },
+    "delay": 0.7
+  },
+  {
+    "event": "test_result",
+    "data": {
+      "charge_id": "C2",
+      "status": "pass",
+      "new_code": true,
+      "output": "============================= test session starts ==============================\ncollected 1 item\n\ntest_charge_C2.py .                                                      [100%]\n\n============================== 1 passed in 0.08s ===============================",
+      "phase": "after_fix"
+    },
+    "delay": 0.6
+  },
+  {
+    "event": "verdict",
+    "data": {
+      "rebuttal_rulings": [
+        {
+          "charge_id": "C3",
+          "upheld": true,
+          "reason": "The PR description and docstring explicitly state that negative quantities raise ValueError by design because returns use a separate refund flow."
+        }
+      ],
+      "ruling": "The court finds that Charges C1 (empty cart division by zero) and C2 (unvalidated discount percentage) were proven by failing pytest exhibits and subsequently cured by the Defense's verified patch without breaking existing tests. Charge C3 is dismissed on rebuttal because rejecting negative quantities is explicitly documented as intended behavior. Accordingly, the pull request is approved for merge with the applied fixes.",
+      "summary": "2 proven charges fixed and verified; 1 bait charge dismissed on documented intent. Merge with fixes (confidence 0.90).",
+      "verdict": "merge_with_fixes",
+      "confidence": 0.9,
+      "stats": {
+        "duration_s": 8.3,
+        "charges_filed": 3,
+        "charges_valid": 3,
+        "charges_dropped": 0,
+        "fixes_applied": 2,
+        "existing_tests_passed": true
+      }
+    },
+    "delay": 1.2
+  }
+]
