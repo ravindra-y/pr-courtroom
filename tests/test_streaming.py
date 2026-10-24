@@ -223,3 +223,20 @@ def test_fastapi_sse_endpoints() -> None:
     assert res_err.status_code == 200
     assert "event: error" in res_err.text
     assert "Invalid GitHub Pull Request URL" in res_err.text
+
+    # Verify static frontend files are served at /
+    res_index = client.get("/")
+    assert res_index.status_code == 200
+    assert "PR Courtroom" in res_index.text
+    assert "AI reviewers give opinions. PR Courtroom gives evidence." in res_index.text
+    assert "onclick=" not in res_index.text.lower()
+
+    res_css = client.get("/style.css")
+    assert res_css.status_code == 200
+    assert "--prosecutor: #ef4444" in res_css.text
+
+    res_js = client.get("/app.js")
+    assert res_js.status_code == 200
+    assert "new EventSource" in res_js.text
+    assert "escapeHtml" in res_js.text
+

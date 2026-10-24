@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PR Courtroom — Evidence-Based AI Code Trial</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <!-- Subtle full-screen flash overlay on Verdict -->
+  <div id="screen-flash" class="screen-flash" aria-hidden="true"></div>
+
+  <!-- Background grid & ambient glow -->
+  <div class="bg-backdrop" aria-hidden="true">
+    <div class="bg-grid"></div>
+    <div class="bg-glow"></div>
+  </div>
+
+  <!-- Top Bar -->
+  <header class="topbar" role="banner">
+    <div class="topbar-brand">
+      <div class="brand-logo" aria-hidden="true">
+        <svg class="gavel-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m14 13-7.5 7.5c-.83.83-2.17.83-3 0 0 0 0 0 0 0a2.12 2.12 0 0 1 0-3L11 10" />
+          <path d="m16 16 6-6" />
+          <path d="m8 8 6-6" />
+          <path d="m9 7 8 8" />
+          <path d="m21 11-8-8" />
+        </svg>
+      </div>
+      <div class="brand-titles">
+        <div class="brand-name-row">
+          <h1 class="brand-title">PR Courtroom</h1>
+          <span class="brand-pill">SANDBOX VERIFIED</span>
+        </div>
+        <p class="brand-tagline">AI reviewers give opinions. PR Courtroom gives evidence.</p>
+      </div>
+    </div>
+
+    <form id="trial-form" class="topbar-controls" novalidate>
+      <div class="url-input-group">
+        <label for="pr-url-input" class="sr-only">GitHub Pull Request URL</label>
+        <input
+          id="pr-url-input"
+          type="url"
+          class="pr-url-input"
+          placeholder="https://github.com/owner/repo/pull/123"
+          autocomplete="off"
+          spellcheck="false"
+          aria-describedby="url-validation-msg"
+        />
+        <span id="url-validation-msg" class="url-validation-msg" role="status" aria-live="polite"></span>
+      </div>
+
+      <div class="control-buttons">
+        <button type="button" id="load-demo-btn" class="btn btn-secondary" title="Fill the demo Pull Request URL">
+          Load demo PR
+        </button>
+
+        <label class="replay-toggle" for="replay-checkbox" title="Stream recorded courtroom fixture without needing API keys">
+          <input type="checkbox" id="replay-checkbox" checked />
+          <span class="toggle-track" aria-hidden="true">
+            <span class="toggle-thumb"></span>
+          </span>
+          <span class="toggle-label">Replay mode</span>
+        </label>
+
+        <button type="submit" id="start-btn" class="btn btn-primary">
+          <svg class="btn-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M8 5v14l11-7z" />
+          </svg>
+          <span>Start trial</span>
+        </button>
+
+        <button type="button" id="cancel-btn" class="btn btn-danger hidden">
+          <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <rect x="6" y="6" width="12" height="12" rx="1" />
+          </svg>
+          <span>Cancel</span>
+        </button>
+      </div>
+    </form>
+  </header>
+
+  <!-- Progress Stepper -->
+  <nav class="stepper-bar" aria-label="Trial progress">
+    <ol class="stepper-list" id="stepper-list">
+      <li class="step-item" data-step="fetch">
+        <span class="step-dot" aria-hidden="true">1</span>
+        <span class="step-label">Fetch PR</span>
+      </li>
+      <li class="step-connector" aria-hidden="true"></li>
+      <li class="step-item" data-step="prosecution">
+        <span class="step-dot" aria-hidden="true">2</span>
+        <span class="step-label">Prosecution</span>
+      </li>
+      <li class="step-connector" aria-hidden="true"></li>
+      <li class="step-item" data-step="evidence">
+        <span class="step-dot" aria-hidden="true">3</span>
+        <span class="step-label">Evidence</span>
+      </li>
+      <li class="step-connector" aria-hidden="true"></li>
+      <li class="step-item" data-step="defense">
+        <span class="step-dot" aria-hidden="true">4</span>
+        <span class="step-label">Defense</span>
+      </li>
+      <li class="step-connector" aria-hidden="true"></li>
+      <li class="step-item" data-step="verdict">
+        <span class="step-dot" aria-hidden="true">5</span>
+        <span class="step-label">Verdict</span>
+      </li>
+    </ol>
+  </nav>
+
+  <!-- Alert / Error / Connection Lost Banner -->
+  <section id="alert-banner" class="alert-banner hidden" role="alert" aria-live="assertive">
+    <div class="alert-content">
+      <svg class="alert-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <circle cx="12" cy="12" r="10" />
+        <line x1="12" y1="8" x2="12" y2="12" />
+        <line x1="12" y1="16" x2="12.01" y2="16" />
+      </svg>
+      <div class="alert-text">
+        <strong id="alert-title" class="alert-title">Courtroom Error</strong>
+        <p id="alert-message" class="alert-message"></p>
+      </div>
+    </div>
+    <div class="alert-actions">
+      <button type="button" id="try-replay-btn" class="btn btn-secondary btn-sm">
+        Try replay mode
+      </button>
+    </div>
+  </section>
+
+  <!-- Main Workspace -->
+  <main class="courtroom-main">
+    <!-- Idle Empty State -->
+    <section id="idle-state" class="idle-state" aria-label="Courtroom idle">
+      <div class="idle-card">
+        <div class="idle-icon-wrap" aria-hidden="true">
+          <svg class="idle-gavel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="m14 13-7.5 7.5c-.83.83-2.17.83-3 0a2.12 2.12 0 0 1 0-3L11 10" />
+            <path d="m16 16 6-6" />
+            <path d="m8 8 6-6" />
+            <path d="m9 7 8 8" />
+            <path d="m21 11-8-8" />
+          </svg>
+        </div>
+        <h2 class="idle-heading">The Courtroom Awaits</h2>
+        <p class="idle-description">
+          Paste a GitHub Pull Request URL or load the demo PR to watch the Prosecutor file executable pytest charges, the Sandbox verify evidence, the Defender patch real bugs, and the Judge deliver a ruling.
+        </p>
+        <div class="idle-actions">
+          <button type="button" id="idle-demo-btn" class="btn btn-primary">
+            Load demo PR &amp; Start Trial
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Two-Column Trial Workspace -->
+    <div id="trial-columns" class="trial-columns hidden">
+      <!-- LEFT COLUMN: Courtroom Transcript -->
+      <section class="panel transcript-panel" aria-labelledby="transcript-heading">
+        <header class="panel-header">
+          <div class="panel-title-wrap">
+            <span class="panel-indicator indicator-live" id="transcript-indicator" aria-hidden="true"></span>
+            <h2 id="transcript-heading" class="panel-title">Courtroom transcript</h2>
+          </div>
+          <span id="transcript-count" class="panel-count">0 entries</span>
+        </header>
+        <div id="transcript-list" class="transcript-timeline" role="log" aria-live="polite"></div>
+      </section>
+
+      <!-- RIGHT COLUMN: Exhibits -->
+      <section class="panel exhibits-panel" aria-labelledby="exhibits-heading">
+        <header class="panel-header">
+          <div class="panel-title-wrap">
+            <svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <polyline points="14 2 14 8 20 8" />
+              <line x1="9" y1="15" x2="15" y2="15" />
+            </svg>
+            <h2 id="exhibits-heading" class="panel-title">Exhibits</h2>
+          </div>
+          <span id="exhibits-count" class="panel-count">0 exhibits</span>
+        </header>
+        <div id="exhibits-empty" class="exhibits-empty">
+          Sandbox pytest exhibits will appear here as charges are tested on HEAD and BASE.
+        </div>
+        <div id="exhibits-list" class="exhibits-list" aria-live="polite"></div>
+      </section>
+    </div>
+
+    <!-- FULL-WIDTH VERDICT SECTION -->
+    <section id="verdict-section" class="verdict-section hidden" aria-labelledby="verdict-heading"></section>
+  </main>
+
+  <!-- Copy Toast -->
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
