@@ -1,15 +1,22 @@
 import asyncio
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from backend.agents.defender import defend
+from backend.agents.judge import build_computed_context, judge
+from backend.agents.prosecutor import prosecute
+from backend.github_client import prepare_workspace
 from backend.models import Charge, DefenseResponse, TestResult
 from backend.sandbox import (
     apply_fix_async,
+    classify_all_async,
     revert_fix,
     run_after_fix_async,
     run_existing_tests_async,
 )
+from backend.scoring import compute_verdict, standing_charges
 
 
 def group_fixes_by_file(
@@ -158,3 +165,114 @@ async def run_defense_and_fixes(
         head_dir=head_dir,
         tests_dir=tests_dir,
     )
+
+
+async def run_full_trial(
+    pr_url: str,
+    run_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """
+    Execute the complete trial pipeline:
+    1. Fetch PR & prepare workspace
+    2. Prosecutor files charges
+    3. Sandbox classifies charges in parallel
+    4. Defender responds to valid charges & fix loop executes
+    5. Judge rules on rebuttals & writes ruling
+    6. Scoring deterministically computes verdict & confidence
+    """
+    start_ts = time.perf_counter()
+    effective_run_id = run_id or f"trial_{uuid.uuid4().hex[:8]}"
+
+    workspace = await prepare_workspace(pr_url, effective_run_id)
+    prosecutor_output = await prosecute(workspace, workspace["head_dir"])
+    charges = prosecutor_output.charges
+
+    initial_results = await classify_all_async(
+        charges,
+        head_dir=workspace["head_dir"],
+        base_dir=workspace["base_dir"],
+    )
+
+    valid_charges: list[Charge] = []
+    charges_dropped = 0
+    for charge, res in zip(charges, initial_results):
+        if res.status == "fail_valid":
+            valid_charges.append(charge)
+        else:
+            charges_dropped += 1
+
+    defense_stage = await run_defense_and_fixes(
+        pr=workspace,
+        valid_charges=valid_charges,
+        test_results=initial_results,
+        head_dir=workspace["head_dir"],
+    )
+
+    responses: list[DefenseResponse] = defense_stage["responses"]
+    fix_results: list[dict[str, Any]] = defense_stage["fix_results"]
+    after_fix_results: list[TestResult] = defense_stage["after_fix_results"]
+
+    existing_tests_passed = all(
+        fx.get("existing_tests_passed", True) for fx in fix_results
+    )
+    fixes_applied = sum(
+        len(fx.get("charge_ids", [])) for fx in fix_results if fx.get("applied")
+    )
+
+    transcript = {
+        "charges": charges,
+        "valid_charges": valid_charges,
+        "initial_test_results": initial_results,
+        "defender_responses": responses,
+        "fix_results": fix_results,
+        "after_fix_test_results": after_fix_results,
+    }
+    computed_context = build_computed_context(
+        valid_charges=valid_charges,
+        defender_responses=responses,
+        fix_results=fix_results,
+        after_fix_results=after_fix_results,
+        existing_tests_passed=existing_tests_passed,
+    )
+
+    judge_output = await judge(
+        pr=workspace,
+        transcript=transcript,
+        computed_context=computed_context,
+    )
+
+    standing = standing_charges(valid_charges, judge_output.rebuttal_rulings)
+    dismissed_by_rebuttal = any(r.upheld for r in judge_output.rebuttal_rulings)
+    verdict, confidence = compute_verdict(
+        standing=standing,
+        fix_results=fix_results,
+        after_fix_results=after_fix_results,
+        any_valid_evidence=len(valid_charges) > 0,
+        dismissed_by_rebuttal=dismissed_by_rebuttal,
+        existing_tests_passed=existing_tests_passed,
+    )
+
+    duration_s = round(time.perf_counter() - start_ts, 2)
+    stats = {
+        "duration_s": duration_s,
+        "charges_filed": len(charges),
+        "charges_valid": len(valid_charges),
+        "charges_dropped": charges_dropped,
+        "fixes_applied": fixes_applied,
+        "existing_tests_passed": existing_tests_passed,
+    }
+
+    return {
+        "pr": workspace,
+        "charges": charges,
+        "initial_results": initial_results,
+        "valid_charges": valid_charges,
+        "defender_responses": responses,
+        "fix_results": fix_results,
+        "after_fix_results": after_fix_results,
+        "judge_output": judge_output,
+        "verdict": verdict,
+        "confidence": confidence,
+        "stats": stats,
+        "duration_s": duration_s,
+    }
