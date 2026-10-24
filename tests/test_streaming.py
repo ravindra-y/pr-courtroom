@@ -444,3 +444,26 @@ def test_fastapi_sse_endpoints() -> None:
     assert res_js.status_code == 200
     assert "new EventSource" in res_js.text
     assert "escapeHtml" in res_js.text
+
+
+def test_non_demo_pr_url_bypasses_replay_mode() -> None:
+    client = TestClient(app)
+
+    async def fake_live_trial(pr_url: str, run_id: str | None = None):
+        yield (
+            "trial_started",
+            {
+                "pr_title": "Fix increasing scale groups in English number normalization",
+                "pr_url": pr_url,
+                "files_changed": ["tests/test_normalizer.py", "whisper/normalizers/english.py"],
+            },
+        )
+
+    with patch("backend.main.run_trial", side_effect=fake_live_trial):
+        res = client.get(
+            "/api/trial?pr_url=https://github.com/openai/whisper/pull/2896&replay=true"
+        )
+    assert res.status_code == 200
+    assert "Fix increasing scale groups in English number normalization" in res.text
+    assert "Add cart total calculation" not in res.text
+

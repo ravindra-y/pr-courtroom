@@ -93,6 +93,23 @@ python -m pytest tests/ -v
 
 ---
 
+### 7. Running on a Real GitHub PR (e.g. `https://github.com/openai/whisper/pull/2896`)
+1. Pull the latest changes (or restart `uvicorn` after updating):
+   ```powershell
+   git pull
+   python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+   ```
+2. Open `http://127.0.0.1:8000` in your browser and press **`Ctrl+Shift+R`** once to hard-refresh cached browser scripts.
+3. Paste any public Python GitHub Pull Request URL into the top input bar — for example:
+   ```text
+   https://github.com/openai/whisper/pull/2896
+   ```
+4. Pasting a non-demo PR URL automatically unchecks **`Replay mode`**. Click **`Start trial`** (do **not** click `Load demo PR`, which resets the input to `https://github.com/demo/shop/pull/1`).
+   - **`GITHUB_TOKEN`** in `.env` is **optional** for public GitHub repositories like `openai/whisper` (only needed for private repos or higher GitHub API rate limits).
+   - **`GEMINI_API_KEY`** in `.env` enables live Gemini 2.5 Flash / Pro agents (`aistudio.google.com`), with a built-in deterministic fallback analyzer if `GEMINI_API_KEY` is not configured.
+
+---
+
 ## 2-Minute Hackathon Demo Script
 
 ### **0:00 – 0:20 | The Hook & The Problem**
