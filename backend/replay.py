@@ -4,6 +4,8 @@ import re
 from pathlib import Path
 from typing import Any, AsyncIterator
 
+from backend.agents.gemini_client import redact_secrets
+
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
 
@@ -38,7 +40,8 @@ def save_fixture(run_name: str, events: list[dict[str, Any]]) -> Path:
         }
         for item in events
     ]
-    path.write_text(json.dumps(normalized, indent=2, ensure_ascii=False), encoding="utf-8")
+    raw_json = json.dumps(normalized, indent=2, ensure_ascii=False)
+    path.write_text(redact_secrets(raw_json), encoding="utf-8")
     return path
 
 

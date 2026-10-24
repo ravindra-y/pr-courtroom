@@ -33,11 +33,16 @@ def _read_changed_python_files(pr: dict, head_dir: str | Path) -> list[tuple[str
     return results
 
 
+MAX_DIFF_CHARS = 30000
+
+
 def build_prosecutor_user_content(pr: dict, head_dir: str | Path) -> str:
     """Build the user prompt containing PR title, description, unified diff, and full HEAD Python files."""
     title = pr.get("title") or ""
     description = pr.get("body") if "body" in pr else (pr.get("description") or "")
     diff = pr.get("diff") or ""
+    if len(diff) > MAX_DIFF_CHARS:
+        diff = diff[:MAX_DIFF_CHARS] + "\n... [diff truncated]"
     py_files = _read_changed_python_files(pr, head_dir)
 
     files_section = "\n\n".join(
